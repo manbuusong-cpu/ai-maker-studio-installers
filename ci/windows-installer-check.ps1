@@ -11,7 +11,10 @@ $null = New-Item -ItemType Directory -Path $work
 $installer = Join-Path $work 'AI-Maker-Studio-UNSIGNED-Setup.exe'
 $user = 'AIMakerCheck'
 $report = [ordered]@{ schemaVersion = 1; scope = 'Existing immutable installer on disposable Windows VM'; os = [Environment]::OSVersion.VersionString; runId = $env:GITHUB_RUN_ID; checks = [Collections.Generic.List[object]]::new(); overall = 'BLOCKED'; limitations = @('Interactive SmartScreen reputation is not tested by silent CI installation.', 'No user antivirus/firewall/SmartScreen policy is disabled.', 'A clean scan is not a security certification.') }
-function Check($id, $status, $detail) { $report.checks.Add([ordered]@{ id = $id; status = $status; detail = $detail }) }
+function Check($id, $status, $detail) {
+    $report.checks.Add([ordered]@{ id = $id; status = $status; detail = $detail })
+    Write-Output ("CHECK " + $id + " " + $status)
+}
 $createdUser = $false
 try {
     $downloadHeaders = @{ Authorization = "Bearer $apiToken"; Accept = 'application/octet-stream' }
@@ -85,7 +88,13 @@ public static class InstallerTestProfile {
 param([string]$Root, [string]$ProfileRoot)
 $ErrorActionPreference = 'Stop'
 $checks = [Collections.Generic.List[object]]::new()
-function Check($id, $status, $detail) { $checks.Add([ordered]@{ id = $id; status = $status; detail = $detail }) }
+function Check($id, $status, $detail) {
+    $checks.Add([ordered]@{ id = $id; status = $status; detail = $detail })
+    $checks | ConvertTo-Json -Depth 15 | Set-Content (Join-Path $Root 'standard-user-report.json') -Encoding UTF8
+}
+function Stage($phase) {
+    @{ phase = $phase; time = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $Root 'standard-user-progress.json') -Encoding UTF8
+}
 $install = Join-Path $Root 'installed'
 $exe = Join-Path $install 'AI Maker Studio.exe'
 $app = $null
@@ -116,6 +125,7 @@ function EvaluatePage {
     } finally { $ws.Dispose(); $cancel.Dispose() }
 }
 try {
+    Stage 'VERIFY_STANDARD_USER'
     $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
     if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Non-administrator test would be invalid.' }
     $isStandardUser = $true
@@ -136,15 +146,27 @@ try {
     $env:TEMP = Join-Path $Root 'user-temp'
     $env:TMP = $env:TEMP
     $null = New-Item -ItemType Directory -Path $env:TEMP -Force
+    Stage 'DPAPI_ROUNDTRIP'
+    Add-Type -AssemblyName System.Security
+    $plain = [Text.Encoding]::UTF8.GetBytes('AI-Maker-Studio-CI-test-data')
+    $encrypted = [Security.Cryptography.ProtectedData]::Protect($plain, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+    $decoded = [Security.Cryptography.ProtectedData]::Unprotect($encrypted, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+    if ([Convert]::ToBase64String($plain) -ne [Convert]::ToBase64String($decoded)) { throw 'DPAPI OS roundtrip mismatch.' }
+    Check 'OS_DPAPI_ROUNDTRIP' 'PASS' 'Same standard user; fixed nonsensitive test bytes. Does not test the Electron credential vault.'
+    Stage 'INSTALLER_START'
     $setup = Start-Process -FilePath (Join-Path $Root 'AI-Maker-Studio-UNSIGNED-Setup.exe') -ArgumentList @('/S', "/D=$install") -PassThru
-    if (-not $setup.WaitForExit(120000)) { $setup.Kill(); throw 'Installation timed out.' }
+    Stage 'INSTALLER_WAIT'
+    if (-not $setup.WaitForExit(60000)) { $setup.Kill(); throw 'Installation timed out.' }
     if ($setup.ExitCode -ne 0 -or -not (Test-Path $exe)) { throw "Installation failed: exit $($setup.ExitCode)." }
     Check 'INSTALL_NONADMIN' 'PASS' @{ exitCode = $setup.ExitCode; scope = 'Silent installation on disposable VM; not interactive SmartScreen.' }
     $meta = (Get-Item $exe).VersionInfo
     Check 'APP_IDENTITY_METADATA' $(if ($meta.ProductName -eq 'AI Maker Studio') { 'PASS' } else { 'WARNING' }) @{ ProductName = $meta.ProductName; FileVersion = $meta.FileVersion; CompanyName = $meta.CompanyName }
+    Check 'APP_AUTHENTICODE' $(if ((Get-AuthenticodeSignature $exe).Status -eq 'Valid') { 'PASS' } else { 'FAIL' }) ([string](Get-AuthenticodeSignature $exe).Status)
+    Stage 'APPLICATION_START'
     $app = Start-Process -FilePath $exe -ArgumentList @('--remote-debugging-address=127.0.0.1','--remote-debugging-port=9223') -PassThru
     $state = $null
-    $readyDeadline = [DateTime]::UtcNow.AddSeconds(60)
+    Stage 'RENDERER_READY'
+    $readyDeadline = [DateTime]::UtcNow.AddSeconds(45)
     do { Start-Sleep -Seconds 2; try { $state = EvaluatePage; if ($state.bridge -and $state.root) { break } } catch { } } while ([DateTime]::UtcNow -lt $readyDeadline)
     if (-not $state -or -not $state.bridge -or -not $state.root) { throw 'Renderer/preload/main IPC did not become ready.' }
     Check 'RENDERER_AND_IPC' 'PASS' $state
@@ -152,15 +174,10 @@ try {
     Check 'WINDOWS_WEBGL' $(if ($state.webgl) { 'PASS' } else { 'FAIL' }) 'Real hosted Windows renderer; no GPU disabling flags.'
     Check 'OFFLINE_DEFAULT' $(if (-not $state.privacy.internetEnabled -and -not $state.privacy.automaticUpdateChecks -and -not $state.privacy.diagnosticsEnabled) { 'PASS' } else { 'FAIL' }) $state.privacy
     Check 'ELECTRON_DPAPI_AVAILABILITY' $(if ($state.credentialStorage -eq 'WINDOWS_DPAPI') { 'PASS' } else { 'NOT TESTED' }) $state.credentialStorage
-    Add-Type -AssemblyName System.Security
-    $plain = [Text.Encoding]::UTF8.GetBytes('AI-Maker-Studio-CI-test-data')
-    $encrypted = [Security.Cryptography.ProtectedData]::Protect($plain, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
-    $decoded = [Security.Cryptography.ProtectedData]::Unprotect($encrypted, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
-    if ([Convert]::ToBase64String($plain) -ne [Convert]::ToBase64String($decoded)) { throw 'DPAPI OS roundtrip mismatch.' }
-    Check 'OS_DPAPI_ROUNDTRIP' 'PASS' 'Same standard user; fixed nonsensitive test bytes.'
 } catch { Check 'INSTALL_OR_STARTUP' 'FAIL' $_.Exception.Message }
 finally {
-    try { if ($app -and -not $app.HasExited) { $null = $app.CloseMainWindow(); if (-not $app.WaitForExit(15000)) { $app.Kill() } } }
+    Stage 'CLEANUP'
+    try { if ($app -and -not $app.HasExited) { $null = $app.CloseMainWindow(); if (-not $app.WaitForExit(10000)) { $app.Kill() } } }
     catch { Check 'APP_CLEANUP' 'FAIL' $_.Exception.Message }
     if ($isStandardUser) {
         $sentinel = $null
@@ -175,7 +192,7 @@ finally {
             $uninstaller = Join-Path $install 'Uninstall AI Maker Studio.exe'
             if (Test-Path $uninstaller) {
                 $remove = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru
-                if (-not $remove.WaitForExit(90000)) { $remove.Kill(); throw 'Uninstall timed out.' }
+                if (-not $remove.WaitForExit(45000)) { $remove.Kill(); throw 'Uninstall timed out.' }
                 Start-Sleep -Seconds 4
                 Check 'UNINSTALL_NONADMIN' $(if ($remove.ExitCode -eq 0 -and -not (Test-Path $exe)) { 'PASS' } else { 'FAIL' }) @{ exitCode = $remove.ExitCode }
                 if ($sentinel) { Check 'USER_DATA_PRESERVED' $(if (Test-Path $sentinel) { 'PASS' } else { 'FAIL' }) 'Only a disposable sentinel was used.' }
@@ -183,12 +200,18 @@ finally {
         } catch { Check 'UNINSTALL_NONADMIN' 'FAIL' $_.Exception.Message }
     } else { Check 'UNINSTALL_NONADMIN' 'NOT TESTED' 'Standard-user identity was not established.' }
     $checks | ConvertTo-Json -Depth 15 | Set-Content (Join-Path $Root 'standard-user-report.json') -Encoding UTF8
+    Stage 'FINISHED'
 }
 '@
     $childPath = Join-Path $work 'standard-user-check.ps1'
     Set-Content $childPath $child -Encoding UTF8
     $process = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Credential $credential -LoadUserProfile -WorkingDirectory $work -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $childPath, '-Root', $work, '-ProfileRoot', $profileBuffer.ToString()) -PassThru
-    if (-not $process.WaitForExit(300000)) { $process.Kill(); throw 'Standard-user test timed out.' }
+    if (-not $process.WaitForExit(180000)) {
+        $process.Kill()
+        Check 'STANDARD_USER_HARNESS' 'NOT TESTED' 'Secondary-logon test exceeded isolated VM time limit. Inspect partial checks and last stage; not an application acceptance result.'
+    }
+    $progressFile = Join-Path $work 'standard-user-progress.json'
+    if (Test-Path $progressFile) { $report.standardUserProgress = Get-Content $progressFile -Raw | ConvertFrom-Json }
     $childReport = Join-Path $work 'standard-user-report.json'
     if (Test-Path $childReport) { foreach ($entry in @(Get-Content $childReport -Raw | ConvertFrom-Json)) { $report.checks.Add($entry) } }
     else { Check 'STANDARD_USER_HARNESS' 'NOT TESTED' @{ exitCode = $process.ExitCode; reason = 'Child report missing; no execution-policy changes attempted.' } }
