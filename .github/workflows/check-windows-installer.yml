@@ -16,8 +16,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $source = (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/b84654ca783d6acc9d5ebcf1d8301471819fcbd4/ci/windows-installer-check.ps1').Content
+          $source = (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/830e677c21f0da011e63acd631b0cd37a1a5e6f1/ci/windows-installer-check.ps1').Content
           $path = Join-Path $env:RUNNER_TEMP 'windows-installer-check.ps1'
           [IO.File]::WriteAllText($path, [string]$source, [Text.UTF8Encoding]::new($false))
-          if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne '5d5f15e5ad99395695bafefeeb3d7533d769e326361153ffe984d443680ce007') { throw 'Diagnostics helper hash differs.' }
+          if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne '534731cd51dcc8f508823598887743ce5451eb8af801858fc8fdc7546275f7d7') { throw 'Diagnostics helper hash differs.' }
           & $path
