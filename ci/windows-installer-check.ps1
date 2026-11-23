@@ -82,7 +82,7 @@ public static class InstallerTestProfile {
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new("$env:COMPUTERNAME\$user", 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
     Set-Acl $work $acl
     $child = @'
-param([string]$Root)
+param([string]$Root, [string]$ProfileRoot)
 $ErrorActionPreference = 'Stop'
 $checks = [Collections.Generic.List[object]]::new()
 function Check($id, $status, $detail) { $checks.Add([ordered]@{ id = $id; status = $status; detail = $detail }) }
@@ -120,11 +120,19 @@ try {
     if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Non-administrator test would be invalid.' }
     $isStandardUser = $true
     Check 'STANDARD_USER' 'PASS' 'Process is not an administrator.'
-    # LoadUserProfile does not replace inherited runneradmin environment values.
-    $env:USERPROFILE = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile, [Environment+SpecialFolderOption]::Create)
-    $env:APPDATA = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData, [Environment+SpecialFolderOption]::Create)
-    $env:LOCALAPPDATA = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData, [Environment+SpecialFolderOption]::Create)
-    if (-not $env:USERPROFILE -or -not $env:APPDATA -or -not $env:LOCALAPPDATA) { throw 'Standard-user profile folders are unavailable.' }
+    # Secondary logon inherits runneradmin's environment. Bind it to the profile
+    # returned by Windows CreateProfile and independently verify the current SID's
+    # ProfileList registration before launching any installer/application.
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $registered = (Get-ItemProperty ("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\" + $sid)).ProfileImagePath
+    if (-not $ProfileRoot -or $registered -ne $ProfileRoot -or -not (Test-Path $ProfileRoot)) { throw 'Current standard-user SID profile does not match Windows registration.' }
+    $env:USERPROFILE = $ProfileRoot
+    $env:APPDATA = Join-Path $ProfileRoot 'AppData\Roaming'
+    $env:LOCALAPPDATA = Join-Path $ProfileRoot 'AppData\Local'
+    $env:HOMEDRIVE = [IO.Path]::GetPathRoot($ProfileRoot).TrimEnd('\')
+    $env:HOMEPATH = $ProfileRoot.Substring($env:HOMEDRIVE.Length)
+    $null = New-Item -ItemType Directory -Path $env:APPDATA, $env:LOCALAPPDATA -Force
+    Check 'PROFILE_IDENTITY' 'PASS' 'Profile path verified against the current Windows SID registration.'
     $env:TEMP = Join-Path $Root 'user-temp'
     $env:TMP = $env:TEMP
     $null = New-Item -ItemType Directory -Path $env:TEMP -Force
@@ -179,7 +187,7 @@ finally {
 '@
     $childPath = Join-Path $work 'standard-user-check.ps1'
     Set-Content $childPath $child -Encoding UTF8
-    $process = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Credential $credential -LoadUserProfile -WorkingDirectory $work -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $childPath, '-Root', $work) -PassThru
+    $process = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Credential $credential -LoadUserProfile -WorkingDirectory $work -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $childPath, '-Root', $work, '-ProfileRoot', $profileBuffer.ToString()) -PassThru
     if (-not $process.WaitForExit(300000)) { $process.Kill(); throw 'Standard-user test timed out.' }
     $childReport = Join-Path $work 'standard-user-report.json'
     if (Test-Path $childReport) { foreach ($entry in @(Get-Content $childReport -Raw | ConvertFrom-Json)) { $report.checks.Add($entry) } }
