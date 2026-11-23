@@ -69,12 +69,12 @@ using System.Text;
 using System.Runtime.InteropServices;
 public static class InstallerTestProfile {
     [DllImport("userenv.dll", CharSet=CharSet.Unicode)]
-    public static extern int CreateProfile(string sid, string user, StringBuilder path, uint length);
+    public static extern int CreateProfile(string sid, string user, [Out] StringBuilder path, uint length);
 }
 '@
     $userSid = (Get-LocalUser -Name $user).SID.Value
-    $profileBuffer = [Text.StringBuilder]::new(1024)
-    $profileResult = [InstallerTestProfile]::CreateProfile($userSid, $user, $profileBuffer, 1024)
+    $profileBuffer = [Text.StringBuilder]::new(260)
+    $profileResult = [InstallerTestProfile]::CreateProfile($userSid, $user, $profileBuffer, 260)
     if ($profileResult -ne 0) { throw "Disposable profile creation failed: $profileResult" }
     Check 'TEST_PROFILE_CREATED' 'PASS' 'Windows CreateProfile succeeded for disposable account.'
     $credential = [PSCredential]::new("$env:COMPUTERNAME\$user", $password)
