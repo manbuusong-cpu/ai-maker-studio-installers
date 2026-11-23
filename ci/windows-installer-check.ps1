@@ -35,13 +35,24 @@ try {
         if (-not $av.AMServiceEnabled -or -not $av.AntivirusEnabled) { throw 'Defender service unavailable in this hosted image.' }
         $scanner = Get-ChildItem "$env:ProgramData\Microsoft\Windows Defender\Platform\*\MpCmdRun.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
         if (-not $scanner) { $scanner = Get-Item "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" }
-        $scanOutput = & $scanner.FullName -Scan -ScanType 3 -File $installer 2>&1
+        # Microsoft documents this scan-only option as ignoring file exclusions and
+        # scanning archives. It changes no Defender policy. Any nonzero result
+        # blocks execution; detected files are never installed.
+        try { Update-MpSignature; $report.defender.SignatureUpdateAttempt = 'Completed' }
+        catch { $report.defender.SignatureUpdateAttempt = $_.Exception.Message }
+        $currentAv = Get-MpComputerStatus
+        $report.defender.SignatureVersion = $currentAv.AntivirusSignatureVersion
+        $report.defender.SignatureUpdated = [string]$currentAv.AntivirusSignatureLastUpdated
+        $scanOutput = & $scanner.FullName -Scan -ScanType 3 -File $installer -DisableRemediation 2>&1
         $scanCode = $LASTEXITCODE
+        $scanText = [string]($scanOutput -join "`n")
         $detections = @(Get-MpThreatDetection | Where-Object { ($_.Resources -join ';') -like "*$work*" })
-        if ($detections.Count -or -not (Test-Path $installer)) {
+        if ($scanCode -ne 0 -or $detections.Count -or -not (Test-Path $installer)) {
             $malwareFound = $true
             Check 'DEFENDER_SCAN' 'FAIL' @{ exitCode = $scanCode; threatIds = @($detections.ThreatID); output = [string]($scanOutput -join "`n") }
-        } elseif ($scanCode -eq 0) { Check 'DEFENDER_SCAN' 'PASS' @{ exitCode = $scanCode; scope = 'Installer custom scan; no matching detections'; output = [string]($scanOutput -join "`n") } }
+        } elseif ($scanText -match '(?i)skipped|not scanned|scan failed') {
+            Check 'DEFENDER_SCAN' 'NOT TESTED' @{ exitCode = $scanCode; output = $scanText }
+        } elseif ($scanText -match '(?i)found no threats') { Check 'DEFENDER_SCAN' 'PASS' @{ exitCode = $scanCode; scope = 'Installer custom archive scan ignoring exclusions; scan-only mode, no threats reported'; output = $scanText } }
         else { Check 'DEFENDER_SCAN' 'NOT TESTED' @{ exitCode = $scanCode; output = [string]($scanOutput -join "`n") } }
     } catch { Check 'DEFENDER_SCAN' 'NOT TESTED' $_.Exception.Message }
     if ($malwareFound) { throw 'Antivirus detection: installer execution forbidden.' }
@@ -50,6 +61,22 @@ try {
     $null = New-LocalUser -Name $user -Password $password -Description 'Disposable AI Maker installer test' -PasswordNeverExpires
     $createdUser = $true
     Add-LocalGroupMember -Group (Get-LocalGroup -SID 'S-1-5-32-545').Name -Member $user
+    # Explicitly create the disposable account's profile before the secondary
+    # logon; LoadUserProfile alone did not populate known folders on this image.
+    Add-Type @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class InstallerTestProfile {
+    [DllImport("userenv.dll", CharSet=CharSet.Unicode)]
+    public static extern int CreateProfile(string sid, string user, StringBuilder path, uint length);
+}
+'@
+    $userSid = (Get-LocalUser -Name $user).SID.Value
+    $profileBuffer = [Text.StringBuilder]::new(1024)
+    $profileResult = [InstallerTestProfile]::CreateProfile($userSid, $user, $profileBuffer, 1024)
+    if ($profileResult -ne 0) { throw "Disposable profile creation failed: $profileResult" }
+    Check 'TEST_PROFILE_CREATED' 'PASS' 'Windows CreateProfile succeeded for disposable account.'
     $credential = [PSCredential]::new("$env:COMPUTERNAME\$user", $password)
     $acl = Get-Acl $work
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new("$env:COMPUTERNAME\$user", 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
@@ -94,9 +121,9 @@ try {
     $isStandardUser = $true
     Check 'STANDARD_USER' 'PASS' 'Process is not an administrator.'
     # LoadUserProfile does not replace inherited runneradmin environment values.
-    $env:USERPROFILE = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
-    $env:APPDATA = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
-    $env:LOCALAPPDATA = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    $env:USERPROFILE = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile, [Environment+SpecialFolderOption]::Create)
+    $env:APPDATA = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData, [Environment+SpecialFolderOption]::Create)
+    $env:LOCALAPPDATA = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData, [Environment+SpecialFolderOption]::Create)
     if (-not $env:USERPROFILE -or -not $env:APPDATA -or -not $env:LOCALAPPDATA) { throw 'Standard-user profile folders are unavailable.' }
     $env:TEMP = Join-Path $Root 'user-temp'
     $env:TMP = $env:TEMP
