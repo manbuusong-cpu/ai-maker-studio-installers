@@ -1,0 +1,23 @@
+name: Collect existing installer Windows security evidence
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/check-windows-installer.yml']
+permissions:
+  contents: write
+jobs:
+  collect-windows-evidence:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check immutable installer on disposable Windows VM
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/24ec1c59df637e57809af7f580a950db64017f88/ci/windows-installer-check.ps1').Content
+          $path = Join-Path $env:RUNNER_TEMP 'windows-installer-check.ps1'
+          [IO.File]::WriteAllText($path, [string]$source, [Text.UTF8Encoding]::new($false))
+          if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne '67ca8a327c81b2d3739fab86af33c118ac047cd6513dd0782fdbf47bf766445c') { throw 'Diagnostics helper hash differs.' }
+          & $path
