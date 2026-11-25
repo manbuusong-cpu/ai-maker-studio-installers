@@ -32,13 +32,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Build tool vulnerability gate failed.' }
           Pop-Location
           $buildSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/9c05bd4d90e5d92fb825d678b517697b9926adeb/ci/rebuild-private-installer.cjs').Content
-          $checkSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/148bd193a38b1e6a156cdf578734f5bcbd3de298/ci/windows-functional-check.ps1').Content
+          $checkSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/a9e5450ffdbaac09e84e2cd9db59545eb200bbfe/ci/windows-functional-check.ps1').Content
           $buildPath = Join-Path $tools 'rebuild-private-installer.cjs'
           $checkPath = Join-Path $tools 'windows-functional-check.ps1'
           [IO.File]::WriteAllText($buildPath, [string]$buildSource, [Text.UTF8Encoding]::new($false))
           [IO.File]::WriteAllText($checkPath, [string]$checkSource, [Text.UTF8Encoding]::new($false))
           if ((Get-FileHash $buildPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'e59a4277b60fd4f00e2cfdc8ea039101acec91ba83cca7f601220dbdc214b641') { throw 'Build helper pin mismatch.' }
-          if ((Get-FileHash $checkPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'bcc538e254e457c013c16e9bc1733603f4f7539e9d689173171f1788a0dee49a') { throw 'Functional checker pin mismatch.' }
+          if ((Get-FileHash $checkPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'be2684830657a27cee4c2b55dea2769af6c53a68140102c70df520b11f04e9b4') { throw 'Functional checker pin mismatch.' }
           node --check $buildPath
           if ($LASTEXITCODE -ne 0) { throw 'Builder syntax failed.' }
           $tokens = $null; $errors = $null
