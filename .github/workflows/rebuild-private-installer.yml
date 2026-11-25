@@ -31,14 +31,18 @@ jobs:
           npm audit --audit-level=high
           if ($LASTEXITCODE -ne 0) { throw 'Build tool vulnerability gate failed.' }
           Pop-Location
-          $buildSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/9c05bd4d90e5d92fb825d678b517697b9926adeb/ci/rebuild-private-installer.cjs').Content
-          $checkSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/a9e5450ffdbaac09e84e2cd9db59545eb200bbfe/ci/windows-functional-check.ps1').Content
+          $buildSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/dafa3317000f156753c111c50615c88a27f440d2/ci/rebuild-private-installer.cjs').Content
+          $checkSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/9ce06e264c2bb0961300a7b66999f0a95e69fcfe/ci/windows-functional-check.ps1').Content
+          $guardSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/3b61c07e390cfeb09f320dd58ecb067bb9c1fb6d/ci/nsis-app-running-guard.nsh').Content
+          $guardPath = Join-Path $tools 'nsis-app-running-guard.nsh'
+          [IO.File]::WriteAllText($guardPath, [string]$guardSource, [Text.UTF8Encoding]::new($false))
+          if ((Get-FileHash $guardPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne '07b41815baef786b2486a06c18e71dd7b3cee0459443eeb6551a5099119abf79') { throw 'NSIS guard pin mismatch.' }
           $buildPath = Join-Path $tools 'rebuild-private-installer.cjs'
           $checkPath = Join-Path $tools 'windows-functional-check.ps1'
           [IO.File]::WriteAllText($buildPath, [string]$buildSource, [Text.UTF8Encoding]::new($false))
           [IO.File]::WriteAllText($checkPath, [string]$checkSource, [Text.UTF8Encoding]::new($false))
-          if ((Get-FileHash $buildPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'e59a4277b60fd4f00e2cfdc8ea039101acec91ba83cca7f601220dbdc214b641') { throw 'Build helper pin mismatch.' }
-          if ((Get-FileHash $checkPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'be2684830657a27cee4c2b55dea2769af6c53a68140102c70df520b11f04e9b4') { throw 'Functional checker pin mismatch.' }
+          if ((Get-FileHash $buildPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne '93496a0e59632fecb6a52afd96eb47bfc4ccfdc6b3ceaa8e6d04a92086b81f81') { throw 'Build helper pin mismatch.' }
+          if ((Get-FileHash $checkPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne '8e39255761893017fe331595e8dcca0b11d9fe2a49a906760388afb9e7e51b58') { throw 'Functional checker pin mismatch.' }
           node --check $buildPath
           if ($LASTEXITCODE -ne 0) { throw 'Builder syntax failed.' }
           $tokens = $null; $errors = $null
