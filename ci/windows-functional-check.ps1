@@ -208,6 +208,11 @@ try {
     if (@('GH_TOKEN','GITHUB_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN') | Where-Object { [Environment]::GetEnvironmentVariable($_) }) { throw 'A CI authorization token reached the standard-user process.' }
     Check 'CHILD_SECRETS_ABSENT' 'PASS' 'Repository authorization is absent from the child environment.'
     Check 'PROFILE_IDENTITY' 'PASS' 'Profile path verified against the current Windows SID registration.'
+    # Do not inherit PowerShell 7's module paths into the Windows PowerShell 5.1 child.
+    $env:PSModulePath = (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules') + [IO.Path]::PathSeparator + (Join-Path $PSHOME 'Modules')
+    foreach ($systemCommand in @('Get-FileHash','Get-NetTCPConnection','Get-AuthenticodeSignature')) { $null = Get-Command $systemCommand -ErrorAction Stop }
+    Check 'CHILD_SYSTEM_MODULES' 'PASS' 'Only Windows PowerShell system module directories are used.'
+
     $env:TEMP = Join-Path $Root 'user-temp'
     $env:TMP = $env:TEMP
     $null = New-Item -ItemType Directory -Path $env:TEMP -Force
