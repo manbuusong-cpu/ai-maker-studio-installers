@@ -20,7 +20,27 @@ const PATCHES = Object.freeze({
 });
 function fail(code) { throw new Error(code); }
 function sha(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
-function stage(name) { console.log(JSON.stringify({ stage: name })); }
+let lastStage = 'NOT_STARTED';
+function stage(name) { lastStage = name; console.log(JSON.stringify({ stage: name })); }
+function failureDiagnostic(error, phase = lastStage) {
+  return {
+    lastStage: phase,
+    reason: typeof error?.message === 'string' && /^[A-Z0-9_]{3,100}$/.test(error.message) ? error.message : 'DETAILS_WITHHELD',
+    code: typeof error?.code === 'string' && /^[A-Z0-9_]{1,50}$/.test(error.code) ? error.code : null,
+    syscall: typeof error?.syscall === 'string' ? (error.syscall.match(/^[a-zA-Z][a-zA-Z0-9_-]{0,39}/)?.[0] || null) : null,
+    exitCode: Number.isInteger(error?.code) ? error.code : Number.isInteger(error?.exitCode) ? error.exitCode : null,
+    errno: Number.isInteger(error?.errno) ? error.errno : null,
+    signal: typeof error?.signal === 'string' && /^[A-Z0-9_]{1,30}$/.test(error.signal) ? error.signal : null,
+  };
+}
+function selectPayloadMember(listing) {
+  if (typeof listing !== 'string' || listing.length > 1024 * 1024) fail('NSIS_MEMBER_LIST_INVALID');
+  const members = [...listing.matchAll(/^Path = ([^\r\n]+)\r?$/gm)].map(match => match[1])
+    .filter(name => name.replace(/\\/g, '/') === '$PLUGINSDIR/app-64.7z');
+  if (members.length !== 1) fail('UNIQUE_NSIS_PAYLOAD_MEMBER_REQUIRED');
+  // Feed 7-Zip its own platform-specific spelling; member selectors are separator-sensitive.
+  return members[0];
+}
 function replaceOnce(text, before, after) {
   const offset = text.indexOf(before);
   if (offset < 0 || text.indexOf(before, offset + before.length) !== -1) fail('PATCH_OCCURRENCE_MISMATCH');
@@ -220,16 +240,27 @@ async function buildPrivate(client, root) {
   for (const item of [wrapper, payload, source, output]) await fs.mkdir(item);
   stage('DOWNLOAD_ORIGINAL');
   await downloadOriginal(client, original);
+  stage('LOCATE_7ZIP');
   const sevenZip = path.join(process.env.ProgramFiles, '7-Zip', '7z.exe');
   const nativeOptions = { env: childEnvironment(process.env), timeout: 180000, maxBuffer: 1024 * 1024, windowsHide: true };
-  stage('EXTRACT_PINNED_PAYLOAD');
-  await exec(sevenZip, ['x', '-y', '-bso0', '-bsp0', '-bse0', '-o' + wrapper, original, '$PLUGINSDIR/app-64.7z'], nativeOptions);
+  stage('LIST_PINNED_NSIS_MEMBER');
+  const listing = await exec(sevenZip, ['l', '-slt', '-ba', original], nativeOptions);
+  const payloadMember = selectPayloadMember(listing.stdout);
+  stage('EXTRACT_NSIS_PAYLOAD_MEMBER');
+  await exec(sevenZip, ['x', '-y', '-bso0', '-bsp0', '-bse0', '-o' + wrapper, original, payloadMember], nativeOptions);
   const appPackage = path.join(wrapper, '$PLUGINSDIR', 'app-64.7z');
+  stage('VERIFY_EXTRACTED_NSIS_MEMBER');
   await safePath(appPackage, root);
+  stage('EXTRACT_PINNED_APP_FILES');
   await exec(sevenZip, ['x', '-y', '-bso0', '-bsp0', '-bse0', '-o' + payload, appPackage], nativeOptions);
   const archive = path.join(payload, 'resources', 'app.asar');
+  stage('VERIFY_PINNED_APP_ARCHIVE');
+  await safePath(archive, root);
   if (await hashFile(archive) !== ORIGINAL.asarSha256) fail('ORIGINAL_ASAR_HASH_MISMATCH');
-  const outerBefore = await treeHashes(payload), inventory = archiveInventory(archive, asar);
+  stage('VERIFY_APP_COMPANIONS');
+  const outerBefore = await treeHashes(payload);
+  stage('VERIFY_ASAR_FILE_BLOCKS');
+  const inventory = archiveInventory(archive, asar);
   if (inventory.find(item => item.name === POLICY)?.sha256 !== POLICY_HASH || !asar.extractFile(archive, POLICY).toString('utf8').includes('schemaVersion: 1, enabled: false')) fail('DISABLED_PINNED_UPDATE_POLICY_REQUIRED');
   stage('VALIDATE_AND_PATCH_ARCHIVE');
   asar.extractAll(archive, source);
@@ -324,5 +355,5 @@ async function main() {
   }
   console.log(JSON.stringify(result));
 }
-module.exports = { ORIGINAL, PATCHES, POLICY_HASH, replaceOnce, patchArchivedFile, childEnvironment, requireEnvironment, assertInventory, assertCompanions, assertUnsignedPE, validateFunctionalReport };
-if (require.main === module) main().catch(error => { console.error('PRIVATE_INSTALLER_OPERATION_FAILED: ' + (/^[A-Z0-9_]{3,100}$/.test(error.message) ? error.message : 'DETAILS_WITHHELD') + '; no private source, credentials or subprocess output printed.'); process.exitCode = 1; });
+module.exports = { ORIGINAL, PATCHES, POLICY_HASH, replaceOnce, patchArchivedFile, childEnvironment, requireEnvironment, assertInventory, assertCompanions, assertUnsignedPE, validateFunctionalReport, selectPayloadMember, failureDiagnostic };
+if (require.main === module) main().catch(error => { console.error(JSON.stringify({ error: 'PRIVATE_INSTALLER_OPERATION_FAILED', ...failureDiagnostic(error) })); process.exitCode = 1; });
