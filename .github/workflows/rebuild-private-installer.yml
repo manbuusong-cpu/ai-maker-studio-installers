@@ -31,8 +31,8 @@ jobs:
           npm audit --audit-level=high
           if ($LASTEXITCODE -ne 0) { throw 'Build tool vulnerability gate failed.' }
           Pop-Location
-          $buildSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/7cbc8d960a1db3af27e8230b4b1c34e3d960d38a/ci/rebuild-private-installer.cjs').Content
-          $checkSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/63c4b659fc1b20626aaa463a08f5e7ef4033132f/ci/windows-functional-check.ps1').Content
+          $buildSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/1c0404828607857f09786cbb93cfadbe7cc8726e/ci/rebuild-private-installer.cjs').Content
+          $checkSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/e7f24c675b7d1bd55182ae6187ff0308daef6d22/ci/windows-functional-check.ps1').Content
           $guardSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/e9b3163a48f15298c739c8980e8ed662c4af4547/ci/nsis-app-running-guard.nsh').Content
           $guardPath = Join-Path $tools 'nsis-app-running-guard.nsh'
           [IO.File]::WriteAllText($guardPath, [string]$guardSource, [Text.UTF8Encoding]::new($false))
@@ -41,8 +41,8 @@ jobs:
           $checkPath = Join-Path $tools 'windows-functional-check.ps1'
           [IO.File]::WriteAllText($buildPath, [string]$buildSource, [Text.UTF8Encoding]::new($false))
           [IO.File]::WriteAllText($checkPath, [string]$checkSource, [Text.UTF8Encoding]::new($false))
-          if ((Get-FileHash $buildPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'fc67f7585c16a8327e53451233f266bebcd54b37527f056a966307876e629577') { throw 'Build helper pin mismatch.' }
-          if ((Get-FileHash $checkPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne '1c5209ab291378ffd5677e92493bb8e7925c68d650f42ee5e19b07ad3bd006bd') { throw 'Functional checker pin mismatch.' }
+          if ((Get-FileHash $buildPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne '978143a6134ac65cdee1cd51e290ba9adcc8d190bf4fb0d29409139070ae0609') { throw 'Build helper pin mismatch.' }
+          if ((Get-FileHash $checkPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'ee39ff792cb7839d805ae35b9882a26db58969eab1afde5b5f2263f99fa48da2') { throw 'Functional checker pin mismatch.' }
           node --check $buildPath
           if ($LASTEXITCODE -ne 0) { throw 'Builder syntax failed.' }
           $tokens = $null; $errors = $null
@@ -76,7 +76,7 @@ jobs:
           $result = Get-Content (Join-Path $env:RUNNER_TEMP 'maker-private-result.json') -Raw | ConvertFrom-Json
           $manifest = Get-Content $result.manifest -Raw | ConvertFrom-Json
           $script = Join-Path $env:RUNNER_TEMP 'maker-private-tools\windows-functional-check.ps1'
-          & $script -LocalInstallerPath $manifest.artifact.path -ExpectedSha256 $manifest.artifact.sha256 -ExpectedBytes $manifest.artifact.bytes -ExpectedVersion $manifest.artifact.version -ReportReleaseId 0 -ReportOutputPath (Join-Path $env:RUNNER_TEMP 'maker-private-functional.json')
+          & $script -LocalInstallerPath $manifest.artifact.path -ExpectedSha256 $manifest.artifact.sha256 -ExpectedBytes $manifest.artifact.bytes -ExpectedVersion $manifest.artifact.version -ExpectedUninstallerSha256 $manifest.nativeUninstaller.sha256 -ReportReleaseId 0 -ReportOutputPath (Join-Path $env:RUNNER_TEMP 'maker-private-functional.json')
           if ($LASTEXITCODE -ne 0) { throw 'Corrected EXE functional validation failed; no draft delivered.' }
       - name: Deliver tested files only into an owner-only draft
         shell: pwsh
