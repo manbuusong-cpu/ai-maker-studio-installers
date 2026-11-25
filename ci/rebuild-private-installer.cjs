@@ -149,15 +149,20 @@ async function downloadOriginal(client, filename) {
   } finally { clearTimeout(timer); await reader.cancel().catch(() => {}); await file.close(); }
   if (bytes !== ORIGINAL.bytes || hash.digest('hex') !== ORIGINAL.sha256) fail('ORIGINAL_ASSET_INTEGRITY_MISMATCH');
 }
+function nativeArchivePath(name, flavor = path) { return flavor.normalize(name); }
+function archiveLookup(asar, method, archive, name, ...args) {
+  try { return asar[method](archive, nativeArchivePath(name), ...args); }
+  catch { fail('ARCHIVE_LOOKUP_FAILED'); }
+}
 function archiveInventory(archive, asar) {
   const entries = [];
   for (const item of asar.listPackage(archive)) {
     const name = item.replace(/^[/\\]/, '').replace(/\\/g, '/');
     if (!name || name.split('/').some(part => !part || part === '.' || part === '..') || path.posix.isAbsolute(name) || name.includes(':')) fail('ARCHIVE_PATH_REJECTED');
-    const stat = asar.statFile(archive, name, false);
+    const stat = archiveLookup(asar, 'statFile', archive, name, false);
     if (stat.link) fail('ARCHIVE_LINK_REJECTED');
     if (!stat.files) {
-      const bytes = asar.extractFile(archive, name, false);
+      const bytes = archiveLookup(asar, 'extractFile', archive, name, false);
       const integrity = stat.integrity;
       if (!integrity || integrity.algorithm !== 'SHA256' || integrity.hash !== sha(bytes) || !Number.isSafeInteger(integrity.blockSize) || integrity.blockSize < 1) fail('ARCHIVE_FILE_INTEGRITY_MISMATCH');
       const blocks = [];
@@ -261,10 +266,10 @@ async function buildPrivate(client, root) {
   const outerBefore = await treeHashes(payload);
   stage('VERIFY_ASAR_FILE_BLOCKS');
   const inventory = archiveInventory(archive, asar);
-  if (inventory.find(item => item.name === POLICY)?.sha256 !== POLICY_HASH || !asar.extractFile(archive, POLICY).toString('utf8').includes('schemaVersion: 1, enabled: false')) fail('DISABLED_PINNED_UPDATE_POLICY_REQUIRED');
+  if (inventory.find(item => item.name === POLICY)?.sha256 !== POLICY_HASH || !archiveLookup(asar, 'extractFile', archive, POLICY).toString('utf8').includes('schemaVersion: 1, enabled: false')) fail('DISABLED_PINNED_UPDATE_POLICY_REQUIRED');
   stage('VALIDATE_AND_PATCH_ARCHIVE');
   asar.extractAll(archive, source);
-  for (const name of Object.keys(PATCHES)) await fs.writeFile(path.join(source, name), patchArchivedFile(name, asar.extractFile(archive, name)));
+  for (const name of Object.keys(PATCHES)) await fs.writeFile(path.join(source, name), patchArchivedFile(name, archiveLookup(asar, 'extractFile', archive, name)));
   const nextArchive = path.join(work, 'app.asar'), unpacked = inventory.filter(item => item.unpacked).map(item => item.name);
   // The exact original unpacked paths contain no glob metacharacters.
   if (unpacked.some(name => /[{}*?!]|\[|\]/.test(name))) fail('UNSUPPORTED_UNPACK_PATH');
@@ -280,7 +285,7 @@ async function buildPrivate(client, root) {
     editWindowsResources: require('app-builder-lib/out/util/resEdit').editWindowsResources,
   });
   assertCompanions(outerBefore, await treeHashes(payload));
-  const metadata = JSON.parse(asar.extractFile(archive, 'package.json'));
+  const metadata = JSON.parse(archiveLookup(asar, 'extractFile', archive, 'package.json'));
   await writeJSON(path.join(work, 'package.json'), metadata);
   const config = { appId: 'lt.aimaker.studio', productName: 'AI Maker Studio', electronVersion: '45.4.1', asar: true, forceCodeSigning: false, compression: 'normal', directories: { output }, publish: null,
     win: { target: [{ target: 'nsis', arch: ['x64'] }], artifactName: ARTIFACT, requestedExecutionLevel: 'asInvoker', forceCodeSigning: false, signAndEditExecutable: false, signExecutable: false },
@@ -355,5 +360,5 @@ async function main() {
   }
   console.log(JSON.stringify(result));
 }
-module.exports = { ORIGINAL, PATCHES, POLICY_HASH, replaceOnce, patchArchivedFile, childEnvironment, requireEnvironment, assertInventory, assertCompanions, assertUnsignedPE, validateFunctionalReport, selectPayloadMember, failureDiagnostic };
+module.exports = { ORIGINAL, PATCHES, POLICY_HASH, replaceOnce, patchArchivedFile, childEnvironment, requireEnvironment, assertInventory, assertCompanions, assertUnsignedPE, validateFunctionalReport, selectPayloadMember, failureDiagnostic, nativeArchivePath, archiveLookup };
 if (require.main === module) main().catch(error => { console.error(JSON.stringify({ error: 'PRIVATE_INSTALLER_OPERATION_FAILED', ...failureDiagnostic(error) })); process.exitCode = 1; });
