@@ -302,13 +302,16 @@ async function buildPrivate(client, root) {
   };
   const { WineVmManager } = require('app-builder-lib/out/vm/WineVm');
   const intermediate = path.join(output, ARTIFACT), originalExec = WineVmManager.prototype.exec;
-  let nativeUninstaller;
+  let nativeUninstaller, nativeUninstallerAttempted = false;
   WineVmManager.prototype.exec = async function (file, args = []) {
     const invocation = nativeUninstallerCommand(file, args, intermediate, process.env);
+    if (nativeUninstallerAttempted) fail('REPEATED_NATIVE_UNINSTALLER_GENERATION_REJECTED');
+    nativeUninstallerAttempted = true;
     await safePath(file, root);
+    const generated = file.replace(/\.exe$/, '.__uninstaller.exe');
+    await fs.lstat(generated).then(() => fail('NEW_UNINSTALLER_OUTPUT_REQUIRED'), error => { if (error.code !== 'ENOENT') throw error; });
     stage('NATIVE_WINDOWS_WRITEUNINSTALLER');
     const result = await exec(invocation.file, invocation.args, invocation.options);
-    const generated = file.replace(/\.exe$/, '.__uninstaller.exe');
     await safePath(generated, root);
     const bytes = await fs.readFile(generated);
     assertUnsignedPE(bytes);
@@ -329,7 +332,7 @@ async function buildPrivate(client, root) {
   await writeJSON(evidenceFile, { schemaVersion: 1, original: ORIGINAL, artifact: { version: VERSION, bytes: artifact.bytes, sha256: artifact.sha256 }, changedArchiveFiles: Object.keys(PATCHES).map(name => ({ name, beforeSha256: PATCHES[name][0], afterSha256: PATCHES[name][1] })), nsisAppRunningGuardSha256: NSIS_GUARD_SHA256, nativeUninstaller, archiveFilesVerified: inventory.length, unpackedFilesPreserved: unpacked.length, unchangedCompanionsVerified: Object.keys(outerBefore).length - 2, productionUpdates: 'DISABLED', authenticode: 'UNSIGNED', hardening, publicSourceUploaded: false, limitations: ['Unsigned private development artifact; SmartScreen reputation and target user-PC acceptance are not validated by rebuilding.'] });
   await fs.writeFile(intermediate + '.sha256', `${artifact.sha256}  ${ARTIFACT}\n`, { flag: 'wx' });
   const manifestFile = path.join(work, 'rebuild-manifest.json');
-  await writeJSON(manifestFile, { schemaVersion: 1, workRoot: work, artifact, evidenceFile });
+  await writeJSON(manifestFile, { schemaVersion: 1, workRoot: work, artifact, evidenceFile, nativeUninstaller });
   stage('REBUILD_COMPLETE_NOT_PUBLISHED');
   return { manifest: manifestFile, artifact: artifact.path, sha256: artifact.sha256, bytes: artifact.bytes };
 }
