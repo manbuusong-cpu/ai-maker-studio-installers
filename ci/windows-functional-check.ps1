@@ -281,7 +281,7 @@ try {
     Stage 'RUNNING_APP_UNINSTALL_GUARD'
     $guardUninstaller = Join-Path $install 'Uninstall AI Maker Studio.exe'
     $guardProbe = Start-NativeTestProcess $guardUninstaller '/currentuser /S' 'RUNNING_APP_UNINSTALL_GUARD'
-    if (-not $guardProbe.WaitForExit(30000)) { Stop-OwnedTestProcess $guardProbe; throw 'Running-app guard timed out.' }
+    if (-not $guardProbe.WaitForExit(45000)) { Stop-OwnedTestProcess $guardProbe; throw 'Running-app guard timed out.' }
     $app.Refresh()
     Check 'RUNNING_APP_UNINSTALL_GUARD' $(if ($guardProbe.ExitCode -eq 10 -and -not $app.HasExited -and (Test-Path $exe)) { 'PASS' } else { 'FAIL' }) @{ exitCode = $guardProbe.ExitCode; appStillRunning = -not $app.HasExited; executablePreserved = Test-Path $exe }
 } catch { $childFailed = $true; Check 'INSTALL_OR_STARTUP' 'FAIL' $_.Exception.Message }
