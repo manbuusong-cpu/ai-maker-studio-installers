@@ -1,0 +1,87 @@
+name: Build and test private AI Maker Studio installer
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/rebuild-private-installer.yml']
+permissions:
+  contents: write
+jobs:
+  private-windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Prepare pinned generic tools without application source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cached = Get-ChildItem (Join-Path $env:RUNNER_TOOL_CACHE 'node') -Directory | Where-Object { $_.Name -match '^24\.\d+\.\d+$' -and [version]$_.Name -ge [version]'24.11.0' } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (-not $cached) { throw 'Node 24.11+ toolcache required.' }
+          $nodeDir = Join-Path $cached.FullName 'x64'
+          if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) { throw 'Cached Node executable unavailable.' }
+          $nodeDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $env:PATH = $nodeDir + ';' + $env:PATH
+          node --version
+          $tools = Join-Path $env:RUNNER_TEMP 'maker-private-tools'
+          $null = New-Item -ItemType Directory $tools
+          $metadata = @{name='maker-private-build-tools';version='1.0.0';private=$true;dependencies=@{'electron-builder'='26.18.0';'@electron/asar'='3.4.1';'resedit'='1.7.2'};overrides=@{'minimatch@>=7.0.0 <11.0.1'='11.0.9'}}
+          $metadata | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $tools 'package.json') -Encoding utf8
+          Push-Location $tools
+          npm install --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned tool installation failed.' }
+          npm audit --audit-level=high
+          if ($LASTEXITCODE -ne 0) { throw 'Build tool vulnerability gate failed.' }
+          Pop-Location
+          $buildSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/d1aca3da312f670119a126395af136e15bf3a670/ci/rebuild-private-installer.cjs').Content
+          $checkSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/d0183d38eaced5b9dea3c2a44aefab9420bb81f1/ci/windows-functional-check.ps1').Content
+          $buildPath = Join-Path $tools 'rebuild-private-installer.cjs'
+          $checkPath = Join-Path $tools 'windows-functional-check.ps1'
+          [IO.File]::WriteAllText($buildPath, [string]$buildSource, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText($checkPath, [string]$checkSource, [Text.UTF8Encoding]::new($false))
+          if ((Get-FileHash $buildPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'f4a4d87a842fc49101e8ee3b1543f184863fe6a334e66748eb30ff554c933ee6') { throw 'Build helper pin mismatch.' }
+          if ((Get-FileHash $checkPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne '985de668a0c6601eeb56692504e7ac00a05435493484ad07a10f28dd36ff31b6') { throw 'Functional checker pin mismatch.' }
+          node --check $buildPath
+          if ($LASTEXITCODE -ne 0) { throw 'Builder syntax failed.' }
+          $tokens = $null; $errors = $null
+          $ast = [Management.Automation.Language.Parser]::ParseFile($checkPath, [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { throw 'Checker syntax failed.' }
+          $embedded = @($ast.FindAll({param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.Value.StartsWith('param([string]$Root')}, $true))
+          if ($embedded.Count -ne 1) { throw 'Expected one standard-user script.' }
+          $null = [Management.Automation.Language.Parser]::ParseInput($embedded[0].Value, [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { throw 'Standard-user script syntax failed.' }
+      - name: Repair authenticated private artifact and preserve hardening
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AI_MAKER_PRIVATE_REBUILD_APPROVED: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Join-Path $env:RUNNER_TEMP 'maker-private-tools\rebuild-private-installer.cjs'
+          $lines = @(& node $script build 2>&1)
+          $resultCode = $LASTEXITCODE
+          $lines | ForEach-Object { Write-Output $_ }
+          if ($resultCode -ne 0) { throw 'Private artifact rebuild failed; no draft delivered.' }
+          $result = ($lines | ForEach-Object { $_.ToString() } | Where-Object { $_.StartsWith('{"manifest":') } | Select-Object -Last 1) | ConvertFrom-Json
+          if (-not $result.manifest) { throw 'Validated build result missing.' }
+          $result | ConvertTo-Json | Set-Content (Join-Path $env:RUNNER_TEMP 'maker-private-result.json') -Encoding utf8
+      - name: Test actual corrected EXE as a standard Windows user
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Get-Content (Join-Path $env:RUNNER_TEMP 'maker-private-result.json') -Raw | ConvertFrom-Json
+          $manifest = Get-Content $result.manifest -Raw | ConvertFrom-Json
+          $script = Join-Path $env:RUNNER_TEMP 'maker-private-tools\windows-functional-check.ps1'
+          & $script -LocalInstallerPath $manifest.artifact.path -ExpectedSha256 $manifest.artifact.sha256 -ExpectedBytes $manifest.artifact.bytes -ExpectedVersion $manifest.artifact.version -ReportReleaseId 0 -ReportOutputPath (Join-Path $env:RUNNER_TEMP 'maker-private-functional.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Corrected EXE functional validation failed; no draft delivered.' }
+      - name: Deliver tested files only into an owner-only draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AI_MAKER_PRIVATE_REBUILD_APPROVED: '1'
+          AI_MAKER_PRIVATE_DRAFT_PUBLISH_APPROVED: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Get-Content (Join-Path $env:RUNNER_TEMP 'maker-private-result.json') -Raw | ConvertFrom-Json
+          & node (Join-Path $env:RUNNER_TEMP 'maker-private-tools\rebuild-private-installer.cjs') publish --manifest $result.manifest --report (Join-Path $env:RUNNER_TEMP 'maker-private-functional.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Owner-only draft delivery failed.' }
