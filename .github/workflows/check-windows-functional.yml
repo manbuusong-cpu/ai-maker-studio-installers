@@ -16,10 +16,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $source = (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/64aace21f6c86c9d2b6e54531bf916d9710c2985/ci/windows-functional-check.ps1').Content
+          $source = (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/7770d97ce0523f3121b71d2d19583fab1374c494/ci/windows-functional-check.ps1').Content
           $path = Join-Path $env:RUNNER_TEMP 'windows-functional-check.ps1'
           [IO.File]::WriteAllText($path, [string]$source, [Text.UTF8Encoding]::new($false))
-          if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'c16530fbe16c102fdab6a14aa842a0917b901c53b7234fc27046bd45c93e9fa9') { throw 'Pinned diagnostics helper hash differs.' }
+          if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne '59bdf5d7b16a1792fdb9fcfba99afc6e10f2e0d4b9dfd4b78a84c0daf95ef50a') { throw 'Pinned diagnostics helper hash differs.' }
           $parseTokens = $null; $parseErrors = $null
           $ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref]$parseTokens, [ref]$parseErrors)
           if ($parseErrors.Count) { throw ('Helper syntax error: ' + ($parseErrors.Message -join '; ')) }
