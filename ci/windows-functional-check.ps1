@@ -181,14 +181,14 @@ function EvaluatePage([string]$Mode = 'state') {
     $ws = [Net.WebSockets.ClientWebSocket]::new()
     $cancel = [Threading.CancellationTokenSource]::new(10000)
     try {
-        $ws.ConnectAsync([uri]$target.webSocketDebuggerUrl, $cancel.Token).GetAwaiter().GetResult()
+        $null = $ws.ConnectAsync([uri]$target.webSocketDebuggerUrl, $cancel.Token).GetAwaiter().GetResult()
         $expression = "(async()=>{const b=window.studio;if(!b)return {bridge:false,ready:document.readyState,root:!!document.getElementById('root')?.children.length,title:document.title,body:document.body?.innerText?.slice(0,500)};const s=await b.security.getSnapshot();const a=await b.loadAutosave();const c=document.querySelector('canvas');return {bridge:true,ready:document.readyState,root:!!document.getElementById('root')?.children.length,nodeUnavailable:typeof require==='undefined',canvas:!!c,webgl:!!(c&&(c.getContext('webgl2')||c.getContext('webgl'))),projectName:a?JSON.parse(a).name:null,renderedProjectName:document.querySelector('.header-path strong')?.textContent?.trim(),version:s.version,platform:s.platform,packaged:s.packaged,privacy:s.privacy,credentialStorage:s.credentials?.storage,autosavePresent:!!a,resources:performance.getEntriesByType('resource').slice(-10).map(r=>({name:new URL(r.name).pathname.split('/').pop(),bytes:r.decodedBodySize}))};})()"
         if ($Mode -eq 'persistence') {
             $expression = "(async()=>{const b=window.studio;const p=JSON.parse(await b.loadAutosave());p.name='Windows CI persistence check';await b.autosave(JSON.stringify(p));return {saved:JSON.parse(await b.loadAutosave()).name==='Windows CI persistence check'};})()"
         }
         $request = @{ id = 1; method = 'Runtime.evaluate'; params = @{ expression = $expression; awaitPromise = $true; returnByValue = $true } } | ConvertTo-Json -Compress -Depth 10
         $bytes = [Text.Encoding]::UTF8.GetBytes($request)
-        $ws.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancel.Token).GetAwaiter().GetResult()
+        $null = $ws.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancel.Token).GetAwaiter().GetResult()
         do {
             $memory = [IO.MemoryStream]::new()
             do {
@@ -295,10 +295,21 @@ finally {
         try {
             $uninstaller = Join-Path $install 'Uninstall AI Maker Studio.exe'
             if (Test-Path $uninstaller) {
-                $remove = Start-NativeTestProcess $uninstaller ("/S _?=$install") 'UNINSTALLER'
+                # Use the registered per-user command. In-place _?= execution
+                # makes this builder's running-app check see the uninstaller
+                # itself under INSTDIR; normal NSIS launch copies it to TEMP.
+                $prefix = '"' + $uninstaller + '"'
+                $registration = @(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'AI Maker Studio' -and $_.DisplayVersion -eq $AppVersion -and $_.QuietUninstallString -and $_.QuietUninstallString.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
+                if ($registration.Count -ne 1) { throw 'Exact per-user uninstall registration not found.' }
+                $quietArguments = $registration[0].QuietUninstallString.Substring($prefix.Length).Trim()
+                if ($quietArguments -notmatch '^/currentuser\s+/S$') { throw 'Unexpected registered uninstall flags; no shell or elevated retry allowed.' }
+                Check 'REGISTERED_UNINSTALL_COMMAND' 'PASS' 'Exact registered executable and /currentuser /S arguments; no in-place override.'
+                $remove = Start-NativeTestProcess $uninstaller $quietArguments 'UNINSTALLER'
                 if (-not $remove.WaitForExit(60000)) { Stop-OwnedTestProcess $remove; throw 'Uninstall timed out.' }
-                Start-Sleep -Seconds 4
-                Check 'UNINSTALL_NONADMIN' $(if ($remove.ExitCode -eq 0 -and -not (Test-Path $exe)) { 'PASS' } else { 'FAIL' }) @{ exitCode = $remove.ExitCode }
+                $removeDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                while ((Test-Path $exe) -and [DateTime]::UtcNow -lt $removeDeadline) { Start-Sleep -Milliseconds 250 }
+                $stillRegistered = Test-Path -LiteralPath $registration[0].PSPath
+                Check 'UNINSTALL_NONADMIN' $(if ($remove.ExitCode -eq 0 -and -not (Test-Path $exe) -and -not $stillRegistered) { 'PASS' } else { 'FAIL' }) @{ exitCode = $remove.ExitCode; executableRemoved = -not (Test-Path $exe); registrationRemoved = -not $stillRegistered }
                 if ($sentinel) { Check 'SENTINEL_PRESERVED' $(if (Test-Path $sentinel) { 'PASS' } else { 'FAIL' }) 'Disposable sentinel only; actual project check is separate.' }
                 if ($projectHash -and (Test-Path $autosaveFile)) {
                     Check 'PROJECT_PRESERVED_AFTER_UNINSTALL' $(if ((Get-FileHash $autosaveFile -Algorithm SHA256).Hash -eq $projectHash) { 'PASS' } else { 'FAIL' }) 'Actual synthetic autosave SHA-256 unchanged by uninstall.'
@@ -356,7 +367,9 @@ finally {
     $report.functionalResult = if ($missing.Count -eq 0 -and $report.childExitCode -eq 0 -and -not $report.childTimedOut -and $report.standardUserProgress.phase -eq 'FINISHED') { 'PASS' } else { 'INCOMPLETE' }
     $report.unpassedFunctionalChecks = $missing
     $report.lifecycleResult = if (@($report.checks | Where-Object { $_.id -like 'DISPOSABLE_*' -and $_.status -eq 'FAIL' }).Count) { 'FAIL' } elseif (@($report.checks | Where-Object { $_.id -like 'DISPOSABLE_*' -and $_.status -eq 'WARNING' }).Count) { 'WARNING' } else { 'PASS' }
-    $report.overall = 'BLOCKED_UNSIGNED_INSTALLER'
+    $report.productionTrust = 'UNSIGNED_PRODUCTION_BLOCKED'
+    $report.acceptanceScope = 'Authorized personal-use functional test only; interactive SmartScreen and trusted publisher are separate.'
+    $report.overall = if ($report.functionalResult -eq 'PASS' -and $report.lifecycleResult -ne 'FAIL') { 'PERSONAL_FUNCTIONAL_PASS_UNSIGNED' } else { 'PERSONAL_FUNCTIONAL_INCOMPLETE_UNSIGNED' }
     $reportFile = Join-Path $work 'windows-security-report.json'
     $report | ConvertTo-Json -Depth 20 | Set-Content $reportFile -Encoding UTF8
     if ($ReportOutputPath) {
