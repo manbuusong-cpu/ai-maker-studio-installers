@@ -21,6 +21,10 @@ const PATCHES = Object.freeze({
 });
 function fail(code) { throw new Error(code); }
 function sha(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
+function nativeUninstallerCommand(file, args, expected, env) {
+  if (path.resolve(file) !== path.resolve(expected) || !Array.isArray(args) || args.length) fail('UNEXPECTED_NATIVE_EXECUTION_REJECTED');
+  return { file, args: [], options: { env: childEnvironment(env), timeout: 90000, maxBuffer: 1024 * 1024, windowsHide: true } };
+}
 let lastStage = 'NOT_STARTED';
 function stage(name) { lastStage = name; console.log(JSON.stringify({ stage: name })); }
 function failureDiagnostic(error, phase = lastStage) {
@@ -296,12 +300,20 @@ async function buildPrivate(client, root) {
     win: { target: [{ target: 'nsis', arch: ['x64'] }], artifactName: ARTIFACT, requestedExecutionLevel: 'asInvoker', forceCodeSigning: false, signAndEditExecutable: false, signExecutable: false },
     nsis: { include: guardInclude, oneClick: false, perMachine: false, selectPerMachineByDefault: false, allowElevation: false, packElevateHelper: false, allowToChangeInstallationDirectory: true, deleteAppDataOnUninstall: false, createDesktopShortcut: true, createStartMenuShortcut: true, runAfterFinish: false, warningsAsErrors: true },
   };
-  const { WineVmManager } = require('app-builder-lib/out/vm/WineVm'), { UninstallerReader } = require('app-builder-lib/out/targets/nsis/nsisUtil');
+  const { WineVmManager } = require('app-builder-lib/out/vm/WineVm');
   const intermediate = path.join(output, ARTIFACT), originalExec = WineVmManager.prototype.exec;
+  let nativeUninstaller;
   WineVmManager.prototype.exec = async function (file, args = []) {
-    if (path.resolve(file) !== intermediate || args.length) fail('UNEXPECTED_NATIVE_EXECUTION_REJECTED');
+    const invocation = nativeUninstallerCommand(file, args, intermediate, process.env);
     await safePath(file, root);
-    return UninstallerReader.exec(file, file.replace(/\.exe$/, '.__uninstaller.exe'));
+    stage('NATIVE_WINDOWS_WRITEUNINSTALLER');
+    const result = await exec(invocation.file, invocation.args, invocation.options);
+    const generated = file.replace(/\.exe$/, '.__uninstaller.exe');
+    await safePath(generated, root);
+    const bytes = await fs.readFile(generated);
+    assertUnsignedPE(bytes);
+    nativeUninstaller = { method: 'NATIVE_WINDOWS_WRITEUNINSTALLER', bytes: bytes.length, sha256: sha(bytes) };
+    return result.stdout;
   };
   try {
     const { build, Platform, Arch } = require('electron-builder');
@@ -313,7 +325,8 @@ async function buildPrivate(client, root) {
   const artifact = { path: intermediate, version: VERSION, bytes: (await fs.stat(intermediate)).size, sha256: await hashFile(intermediate) };
   if (artifact.bytes < 1024 * 1024 || artifact.sha256 === ORIGINAL.sha256) fail('NEW_INSTALLER_REQUIRED');
   const evidenceFile = path.join(work, 'rebuild-evidence.json');
-  await writeJSON(evidenceFile, { schemaVersion: 1, original: ORIGINAL, artifact: { version: VERSION, bytes: artifact.bytes, sha256: artifact.sha256 }, changedArchiveFiles: Object.keys(PATCHES).map(name => ({ name, beforeSha256: PATCHES[name][0], afterSha256: PATCHES[name][1] })), nsisAppRunningGuardSha256: NSIS_GUARD_SHA256, archiveFilesVerified: inventory.length, unpackedFilesPreserved: unpacked.length, unchangedCompanionsVerified: Object.keys(outerBefore).length - 2, productionUpdates: 'DISABLED', authenticode: 'UNSIGNED', hardening, publicSourceUploaded: false, limitations: ['Unsigned private development artifact; SmartScreen reputation and target user-PC acceptance are not validated by rebuilding.'] });
+  if (!nativeUninstaller) fail('NATIVE_UNINSTALLER_GENERATION_REQUIRED');
+  await writeJSON(evidenceFile, { schemaVersion: 1, original: ORIGINAL, artifact: { version: VERSION, bytes: artifact.bytes, sha256: artifact.sha256 }, changedArchiveFiles: Object.keys(PATCHES).map(name => ({ name, beforeSha256: PATCHES[name][0], afterSha256: PATCHES[name][1] })), nsisAppRunningGuardSha256: NSIS_GUARD_SHA256, nativeUninstaller, archiveFilesVerified: inventory.length, unpackedFilesPreserved: unpacked.length, unchangedCompanionsVerified: Object.keys(outerBefore).length - 2, productionUpdates: 'DISABLED', authenticode: 'UNSIGNED', hardening, publicSourceUploaded: false, limitations: ['Unsigned private development artifact; SmartScreen reputation and target user-PC acceptance are not validated by rebuilding.'] });
   await fs.writeFile(intermediate + '.sha256', `${artifact.sha256}  ${ARTIFACT}\n`, { flag: 'wx' });
   const manifestFile = path.join(work, 'rebuild-manifest.json');
   await writeJSON(manifestFile, { schemaVersion: 1, workRoot: work, artifact, evidenceFile });
@@ -365,5 +378,5 @@ async function main() {
   }
   console.log(JSON.stringify(result));
 }
-module.exports = { ORIGINAL, PATCHES, POLICY_HASH, NSIS_GUARD_SHA256, replaceOnce, patchArchivedFile, childEnvironment, requireEnvironment, assertInventory, assertCompanions, assertUnsignedPE, validateFunctionalReport, selectPayloadMember, failureDiagnostic, nativeArchivePath, archiveLookup };
+module.exports = { ORIGINAL, PATCHES, POLICY_HASH, NSIS_GUARD_SHA256, replaceOnce, patchArchivedFile, childEnvironment, requireEnvironment, assertInventory, assertCompanions, assertUnsignedPE, validateFunctionalReport, selectPayloadMember, failureDiagnostic, nativeArchivePath, archiveLookup, nativeUninstallerCommand };
 if (require.main === module) main().catch(error => { console.error(JSON.stringify({ error: 'PRIVATE_INSTALLER_OPERATION_FAILED', ...failureDiagnostic(error) })); process.exitCode = 1; });
