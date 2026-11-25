@@ -286,7 +286,10 @@ try {
     Check 'PROJECT_RESTART' 'PASS' 'Synthetic project restored from the actual app userData directory after EXE restart.'
     Stage 'RUNNING_APP_UNINSTALL_GUARD'
     $guardUninstaller = Join-Path $install 'Uninstall AI Maker Studio.exe'
-    $guardProbe = Start-NativeTestProcess $guardUninstaller '/currentuser /S' 'RUNNING_APP_UNINSTALL_GUARD'
+    # NSIS normally relocates its uninstaller to TEMP and the original launcher
+    # can exit before that child. In-place mode is used ONLY for this busy-app
+    # rejection probe so its real guard exit10 is observed before closing the app.
+    $guardProbe = Start-NativeTestProcess $guardUninstaller ("/currentuser /S _?=$install") 'RUNNING_APP_UNINSTALL_GUARD'
     if (-not $guardProbe.WaitForExit(45000)) { Stop-OwnedTestProcess $guardProbe; throw 'Running-app guard timed out.' }
     $app.Refresh()
     Check 'RUNNING_APP_UNINSTALL_GUARD' $(if ($guardProbe.ExitCode -eq 10 -and -not $app.HasExited -and (Test-Path $exe)) { 'PASS' } else { 'FAIL' }) @{ exitCode = $guardProbe.ExitCode; appStillRunning = -not $app.HasExited; executablePreserved = Test-Path $exe }
@@ -322,10 +325,13 @@ finally {
 
                 $remove = Start-NativeTestProcess $uninstaller $quietArguments 'UNINSTALLER'
                 if (-not $remove.WaitForExit(60000)) { Stop-OwnedTestProcess $remove; throw 'Uninstall timed out.' }
-                $removeDeadline = [DateTime]::UtcNow.AddSeconds(30)
-                while ((Test-Path $exe) -and [DateTime]::UtcNow -lt $removeDeadline) { Start-Sleep -Milliseconds 250 }
+                # The registered command launches the normal relocated child.
+                # Wait for its observable completion, not merely the launcher or
+                # app executable removal (which happens before registry cleanup).
+                $removeDeadline = [DateTime]::UtcNow.AddSeconds(60)
+                while (((Test-Path $exe) -or (Test-Path -LiteralPath $registration[0].PSPath) -or (Test-Path $uninstaller)) -and [DateTime]::UtcNow -lt $removeDeadline) { Start-Sleep -Milliseconds 250 }
                 $stillRegistered = Test-Path -LiteralPath $registration[0].PSPath
-                Check 'UNINSTALL_NONADMIN' $(if ($remove.ExitCode -eq 0 -and -not (Test-Path $exe) -and -not $stillRegistered) { 'PASS' } else { 'FAIL' }) @{ exitCode = $remove.ExitCode; executableRemoved = -not (Test-Path $exe); registrationRemoved = -not $stillRegistered }
+                Check 'UNINSTALL_NONADMIN' $(if ($remove.ExitCode -eq 0 -and -not (Test-Path $exe) -and -not $stillRegistered -and -not (Test-Path $uninstaller)) { 'PASS' } else { 'FAIL' }) @{ registeredLauncherExitCode = $remove.ExitCode; executableRemoved = -not (Test-Path $exe); registrationRemoved = -not $stillRegistered; uninstallerRemoved = -not (Test-Path $uninstaller); scope = 'Actual files/registry completion of normal relocated uninstaller; launcher code is separate.' }
                 if ($sentinel) { Check 'SENTINEL_PRESERVED' $(if (Test-Path $sentinel) { 'PASS' } else { 'FAIL' }) 'Disposable sentinel only; actual project check is separate.' }
                 if ($projectHash -and (Test-Path $autosaveFile)) {
                     Check 'PROJECT_PRESERVED_AFTER_UNINSTALL' $(if ((Get-FileHash $autosaveFile -Algorithm SHA256).Hash -eq $projectHash) { 'PASS' } else { 'FAIL' }) 'Actual synthetic autosave SHA-256 unchanged by uninstall.'
