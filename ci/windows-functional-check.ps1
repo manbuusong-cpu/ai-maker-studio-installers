@@ -3,6 +3,7 @@ param(
     [ValidatePattern('^[0-9a-f]{64}$')][string]$ExpectedSha256 = '4c93d4032860f6ee0b55a76715761c48605527e95b55ecd5730edd5fe8cf9fa6',
     [ValidateRange(1,536870912)][long]$ExpectedBytes = 137767835,
     [ValidatePattern('^0\.[0-9]+\.[0-9]+-dev\.[0-9]+$')][string]$ExpectedVersion = '0.3.1-dev.1',
+    [ValidatePattern('^([0-9a-f]{64})?$')][string]$ExpectedUninstallerSha256 = '',
     [long]$AssetId = 782615221,
     [long]$ReportReleaseId = 455308270,
     [string]$ReportOutputPath = ''
@@ -121,7 +122,7 @@ public static class InstallerTestProfile {
     Set-TestAccess $installer $false $false
     foreach ($owned in @($results, (Join-Path $work 'installed'), (Join-Path $work 'user-temp'))) { Set-TestAccess $owned $true $true }
     $child = @'
-param([string]$Root, [string]$ProfileRoot, [string]$ExpectedHash, [string]$AppVersion)
+param([string]$Root, [string]$ProfileRoot, [string]$ExpectedHash, [string]$AppVersion, [string]$UninstallerHash)
 $ErrorActionPreference = 'Stop'
 $checks = [Collections.Generic.List[object]]::new()
 $resultDirectory = Join-Path $Root 'output'
@@ -248,6 +249,11 @@ try {
     if (-not $setup.WaitForExit(90000)) { Stop-OwnedTestProcess $setup; throw 'Installation timed out.' }
     if ($setup.ExitCode -ne 0 -or -not (Test-Path $exe)) { throw "Installation failed: exit $($setup.ExitCode)." }
     Check 'INSTALL_NONADMIN' 'PASS' @{ exitCode = $setup.ExitCode; scope = 'Silent installation on disposable VM; not interactive SmartScreen.' }
+    if ($UninstallerHash) {
+        $installedUninstallerHash = (Get-FileHash (Join-Path $install 'Uninstall AI Maker Studio.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+        Check 'NATIVE_UNINSTALLER_INSTALLED_INTEGRITY' $(if ($installedUninstallerHash -eq $UninstallerHash) { 'PASS' } else { 'FAIL' }) $installedUninstallerHash
+        if ($installedUninstallerHash -ne $UninstallerHash) { throw 'Installed uninstaller differs from the native generated output.' }
+    }
     $meta = (Get-Item $exe).VersionInfo
     Check 'APP_IDENTITY_METADATA' $(if ($meta.ProductName -eq 'AI Maker Studio') { 'PASS' } else { 'WARNING' }) @{ ProductName = $meta.ProductName; FileVersion = $meta.FileVersion; CompanyName = $meta.CompanyName }
     Check 'APP_AUTHENTICODE' $(if ((Get-AuthenticodeSignature $exe).Status -eq 'Valid') { 'PASS' } else { 'FAIL' }) ([string](Get-AuthenticodeSignature $exe).Status)
@@ -337,7 +343,9 @@ exit 0
     $childPath = Join-Path $work 'standard-user-check.ps1'
     Set-Content $childPath $child -Encoding UTF8
     Set-TestAccess $childPath $false $false
-    $process = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Credential $credential -LoadUserProfile -WorkingDirectory $work -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $childPath, '-Root', $work, '-ProfileRoot', $profileBuffer.ToString(), '-ExpectedHash', $expected, '-AppVersion', $ExpectedVersion) -PassThru
+    $childArguments = @('-NoProfile', '-NonInteractive', '-File', $childPath, '-Root', $work, '-ProfileRoot', $profileBuffer.ToString(), '-ExpectedHash', $expected, '-AppVersion', $ExpectedVersion)
+    if ($ExpectedUninstallerSha256) { $childArguments += @('-UninstallerHash', $ExpectedUninstallerSha256) }
+    $process = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Credential $credential -LoadUserProfile -WorkingDirectory $work -ArgumentList $childArguments -PassThru
     $null = $process.Handle # Cache the native handle before secondary-logon child exit.
     if (-not $process.WaitForExit(360000)) {
         $null = & "$env:SystemRoot\System32\taskkill.exe" /PID $process.Id /T /F 2>&1
