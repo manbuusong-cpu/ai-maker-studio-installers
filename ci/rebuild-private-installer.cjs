@@ -13,7 +13,7 @@ const ARTIFACT = `AI-Maker-Studio-Setup-${VERSION}-Windows-x64-UNSIGNED.exe`;
 const ORIGINAL = Object.freeze({ assetId: 782615221, bytes: 137767835, sha256: '4c93d4032860f6ee0b55a76715761c48605527e95b55ecd5730edd5fe8cf9fa6', asarSha256: 'ef37a88dce5beb45f57aea7ea1c35c76c361ee218efc096103f32dc1ab848c36' });
 const POLICY = 'apps/desktop/electron/updates/trust-policy.cjs';
 const POLICY_HASH = '57f3d8e9696eb7c2e5ea96f6385935477a3ee8673148b6779e8ec0266f6ced22';
-const NSIS_GUARD_SHA256 = '07b41815baef786b2486a06c18e71dd7b3cee0459443eeb6551a5099119abf79';
+const NSIS_GUARD_SHA256 = '675c7ee772d6bf690f476b2001dd09c8e0aecdf6554711cc603ac65ccdfd9940';
 const PATCHES = Object.freeze({
   'apps/desktop/electron/security/renderer-policy.cjs': ['46d1e131a713cd72837dab276ca8ffdc968c0a8796c8f33c185d1235c4ac1394', '1d90ea6a0163e87bfb473107e7c21f7e24585218f95505df65cfc1f3f7e80b29'],
   'package.json': ['b1791b16b1f68acd25cc35f90f9a6b8132afc9658afffb2a5ea3b47ccbec45c4', 'f74fcf2f499e7f367854a4898e382fca78c49e16f3991387b7d6dc6a98c0063f'],
