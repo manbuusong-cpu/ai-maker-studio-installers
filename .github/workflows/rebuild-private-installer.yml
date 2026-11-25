@@ -32,7 +32,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Build tool vulnerability gate failed.' }
           Pop-Location
           $buildSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/1c0404828607857f09786cbb93cfadbe7cc8726e/ci/rebuild-private-installer.cjs').Content
-          $checkSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/e7f24c675b7d1bd55182ae6187ff0308daef6d22/ci/windows-functional-check.ps1').Content
+          $checkSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/850b53976045ce31544ddf05bf502f1c8f747a6f/ci/windows-functional-check.ps1').Content
           $guardSource = (Invoke-WebRequest 'https://raw.githubusercontent.com/manbuusong-cpu/ai-maker-studio-installers/e9b3163a48f15298c739c8980e8ed662c4af4547/ci/nsis-app-running-guard.nsh').Content
           $guardPath = Join-Path $tools 'nsis-app-running-guard.nsh'
           [IO.File]::WriteAllText($guardPath, [string]$guardSource, [Text.UTF8Encoding]::new($false))
@@ -42,7 +42,7 @@ jobs:
           [IO.File]::WriteAllText($buildPath, [string]$buildSource, [Text.UTF8Encoding]::new($false))
           [IO.File]::WriteAllText($checkPath, [string]$checkSource, [Text.UTF8Encoding]::new($false))
           if ((Get-FileHash $buildPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne '978143a6134ac65cdee1cd51e290ba9adcc8d190bf4fb0d29409139070ae0609') { throw 'Build helper pin mismatch.' }
-          if ((Get-FileHash $checkPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'ee39ff792cb7839d805ae35b9882a26db58969eab1afde5b5f2263f99fa48da2') { throw 'Functional checker pin mismatch.' }
+          if ((Get-FileHash $checkPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'c0be240611dfc99fd719b9c79838919b8bb44e5a8eeeb9f7eb7518819ff42583') { throw 'Functional checker pin mismatch.' }
           node --check $buildPath
           if ($LASTEXITCODE -ne 0) { throw 'Builder syntax failed.' }
           $tokens = $null; $errors = $null
