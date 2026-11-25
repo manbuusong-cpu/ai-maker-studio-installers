@@ -1,3 +1,12 @@
+param(
+    [string]$LocalInstallerPath = '',
+    [ValidatePattern('^[0-9a-f]{64}$')][string]$ExpectedSha256 = '4c93d4032860f6ee0b55a76715761c48605527e95b55ecd5730edd5fe8cf9fa6',
+    [ValidateRange(1,536870912)][long]$ExpectedBytes = 137767835,
+    [ValidatePattern('^0\.[0-9]+\.[0-9]+-dev\.[0-9]+$')][string]$ExpectedVersion = '0.3.1-dev.1',
+    [long]$AssetId = 782615221,
+    [long]$ReportReleaseId = 455308270,
+    [string]$ReportOutputPath = ''
+)
 # Run only on a disposable GitHub-hosted Windows VM. Never bypass Windows protections.
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows' -or $env:GITHUB_REPOSITORY -ne 'manbuusong-cpu/ai-maker-studio-installers') { throw 'Disposable authorized CI environment required.' }
@@ -5,7 +14,7 @@ $apiToken = $env:GH_TOKEN
 if (-not $apiToken) { throw 'Repository-scoped CI authorization required.' }
 $headers = @{ Authorization = "Bearer $apiToken"; Accept = 'application/vnd.github+json' }
 $api = 'https://api.github.com/repos/manbuusong-cpu/ai-maker-studio-installers'
-$expected = '4c93d4032860f6ee0b55a76715761c48605527e95b55ecd5730edd5fe8cf9fa6'
+$expected = $ExpectedSha256
 $work = Join-Path $env:PUBLIC ('AIMakerInstallerCheck-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $work
 $results = Join-Path $work 'output'
@@ -24,9 +33,15 @@ $report.launchMethod = 'Bounded native ProcessStartInfo.UseShellExecute=false; f
 $report.functionalResult = 'NOT TESTED'
 try {
     $downloadHeaders = @{ Authorization = "Bearer $apiToken"; Accept = 'application/octet-stream' }
-    Invoke-WebRequest -Uri "$api/releases/assets/782615221" -Headers $downloadHeaders -OutFile $installer
+    if ($LocalInstallerPath) {
+        $local = [IO.Path]::GetFullPath($LocalInstallerPath)
+        $tempRoot = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+        if (-not $local.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or -not $local.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase) -or ((Get-Item -LiteralPath $local).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Only the owned CI temporary EXE is accepted.' }
+        Copy-Item -LiteralPath $local -Destination $installer
+    } else { Invoke-WebRequest -Uri "$api/releases/assets/$AssetId" -Headers $downloadHeaders -OutFile $installer }
     $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ((Get-Item $installer).Length -ne 137767835 -or $hash -ne $expected) { throw 'Installer integrity mismatch; execution forbidden.' }
+    if ((Get-Item $installer).Length -ne $ExpectedBytes -or $hash -ne $expected) { throw 'Installer integrity mismatch; execution forbidden.' }
+    $report.artifact = @{ sha256 = $hash; bytes = (Get-Item $installer).Length; version = $ExpectedVersion }
     Check 'DOWNLOAD_SHA256' 'PASS' $hash
     Set-Content -Path $installer -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ascii
     Check 'INTERNET_ZONE_PRESERVED' 'PASS' ((Get-Content $installer -Stream Zone.Identifier) -join '; ')
@@ -106,7 +121,7 @@ public static class InstallerTestProfile {
     Set-TestAccess $installer $false $false
     foreach ($owned in @($results, (Join-Path $work 'installed'), (Join-Path $work 'user-temp'))) { Set-TestAccess $owned $true $true }
     $child = @'
-param([string]$Root, [string]$ProfileRoot)
+param([string]$Root, [string]$ProfileRoot, [string]$ExpectedHash, [string]$AppVersion)
 $ErrorActionPreference = 'Stop'
 $checks = [Collections.Generic.List[object]]::new()
 $resultDirectory = Join-Path $Root 'output'
@@ -167,7 +182,7 @@ function EvaluatePage([string]$Mode = 'state') {
     $cancel = [Threading.CancellationTokenSource]::new(10000)
     try {
         $ws.ConnectAsync([uri]$target.webSocketDebuggerUrl, $cancel.Token).GetAwaiter().GetResult()
-        $expression = "(async()=>{const b=window.studio;if(!b)return {bridge:false,ready:document.readyState};const s=await b.security.getSnapshot();const a=await b.loadAutosave();const c=document.querySelector('canvas');return {bridge:true,ready:document.readyState,root:!!document.getElementById('root')?.children.length,nodeUnavailable:typeof require==='undefined',canvas:!!c,webgl:!!(c&&(c.getContext('webgl2')||c.getContext('webgl'))),projectName:a?JSON.parse(a).name:null,renderedProjectName:document.querySelector('.header-path strong')?.textContent?.trim(),version:s.version,platform:s.platform,packaged:s.packaged,privacy:s.privacy,credentialStorage:s.credentials?.storage,autosavePresent:!!a};})()"
+        $expression = "(async()=>{const b=window.studio;if(!b)return {bridge:false,ready:document.readyState,root:!!document.getElementById('root')?.children.length,title:document.title,body:document.body?.innerText?.slice(0,500)};const s=await b.security.getSnapshot();const a=await b.loadAutosave();const c=document.querySelector('canvas');return {bridge:true,ready:document.readyState,root:!!document.getElementById('root')?.children.length,nodeUnavailable:typeof require==='undefined',canvas:!!c,webgl:!!(c&&(c.getContext('webgl2')||c.getContext('webgl'))),projectName:a?JSON.parse(a).name:null,renderedProjectName:document.querySelector('.header-path strong')?.textContent?.trim(),version:s.version,platform:s.platform,packaged:s.packaged,privacy:s.privacy,credentialStorage:s.credentials?.storage,autosavePresent:!!a,resources:performance.getEntriesByType('resource').slice(-10).map(r=>({name:new URL(r.name).pathname.split('/').pop(),bytes:r.decodedBodySize}))};})()"
         if ($Mode -eq 'persistence') {
             $expression = "(async()=>{const b=window.studio;const p=JSON.parse(await b.loadAutosave());p.name='Windows CI persistence check';await b.autosave(JSON.stringify(p));return {saved:JSON.parse(await b.loadAutosave()).name==='Windows CI persistence check'};})()"
         }
@@ -224,7 +239,7 @@ try {
     if ([Convert]::ToBase64String($plain) -ne [Convert]::ToBase64String($decoded)) { throw 'DPAPI OS roundtrip mismatch.' }
     Check 'OS_DPAPI_ROUNDTRIP' 'PASS' 'Same standard user; fixed nonsensitive test bytes. Does not test the Electron credential vault.'
     $sourceInstaller = Join-Path $Root 'AI-Maker-Studio-UNSIGNED-Setup.exe'
-    if ((Get-FileHash $sourceInstaller -Algorithm SHA256).Hash.ToLowerInvariant() -ne '4c93d4032860f6ee0b55a76715761c48605527e95b55ecd5730edd5fe8cf9fa6') { throw 'Child installer hash mismatch.' }
+    if ((Get-FileHash $sourceInstaller -Algorithm SHA256).Hash.ToLowerInvariant() -ne $ExpectedHash) { throw 'Child installer hash mismatch.' }
     if ((Get-Content $sourceInstaller -Stream Zone.Identifier -Raw) -notmatch 'ZoneId=3') { throw 'Internet zone marker was lost.' }
     Check 'CHILD_INSTALLER_INTEGRITY' 'PASS' 'Hash and Internet zone rechecked immediately before launch; source is read-only.'
     # Exact executable invocation is a functional CI test, not an Explorer reputation test.
@@ -237,14 +252,14 @@ try {
     Check 'APP_IDENTITY_METADATA' $(if ($meta.ProductName -eq 'AI Maker Studio') { 'PASS' } else { 'WARNING' }) @{ ProductName = $meta.ProductName; FileVersion = $meta.FileVersion; CompanyName = $meta.CompanyName }
     Check 'APP_AUTHENTICODE' $(if ((Get-AuthenticodeSignature $exe).Status -eq 'Valid') { 'PASS' } else { 'FAIL' }) ([string](Get-AuthenticodeSignature $exe).Status)
     Stage 'APPLICATION_START'
-    $app = Start-NativeTestProcess $exe '--remote-debugging-address=127.0.0.1 --remote-debugging-port=9223' 'APPLICATION'
+    $app = Start-NativeTestProcess $exe ("--remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 --enable-logging=file --log-file=$resultDirectory\electron.log") 'APPLICATION'
     $state = $null
     $lastReadyError = $null
     Stage 'RENDERER_READY'
     $readyDeadline = [DateTime]::UtcNow.AddSeconds(45)
     do { Start-Sleep -Seconds 2; try { $state = EvaluatePage; if ($state.bridge -and $state.root -and $state.autosavePresent) { break } } catch { $lastReadyError = $_.Exception.Message } } while ([DateTime]::UtcNow -lt $readyDeadline)
-    if (-not $state -or -not $state.bridge -or -not $state.root) { throw ('Renderer/preload/main IPC did not become ready. Last diagnostic: ' + $lastReadyError) }
-    if ($state.platform -ne 'win32' -or $state.packaged -ne $true -or $state.version -ne '0.3.1-dev.1') { throw 'Unexpected Windows packaged app identity.' }
+    if (-not $state -or -not $state.bridge -or -not $state.root) { throw ('Renderer/preload/main IPC did not become ready. Last diagnostic: ' + $lastReadyError + '; state: ' + ($state | ConvertTo-Json -Depth 5 -Compress)) }
+    if ($state.platform -ne 'win32' -or $state.packaged -ne $true -or $state.version -ne $AppVersion) { throw 'Unexpected Windows packaged app identity.' }
     Check 'PACKAGED_WINDOWS_IDENTITY' 'PASS' @{ version = $state.version; platform = $state.platform; packaged = $state.packaged }
     Check 'RENDERER_AND_IPC' 'PASS' $state
     Check 'NODE_ISOLATION' $(if ($state.nodeUnavailable) { 'PASS' } else { 'FAIL' }) 'Renderer Node require must be unavailable.'
@@ -258,7 +273,7 @@ try {
     $autosaveFile = Join-Path $env:APPDATA 'AI Maker Studio\autosave.aimaker.json'
     $projectHash = (Get-FileHash $autosaveFile -Algorithm SHA256).Hash
     if ((Get-Content $autosaveFile -Raw | ConvertFrom-Json).name -ne 'Windows CI persistence check') { throw 'Persisted project file mismatch.' }
-    $app = Start-NativeTestProcess $exe '--remote-debugging-address=127.0.0.1 --remote-debugging-port=9223' 'APPLICATION_RESTART'
+    $app = Start-NativeTestProcess $exe ("--remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 --enable-logging=file --log-file=$resultDirectory\electron.log") 'APPLICATION_RESTART'
     $state = $null; $restartDeadline = [DateTime]::UtcNow.AddSeconds(45)
     do { Start-Sleep -Seconds 2; try { $state = EvaluatePage; if ($state.bridge -and $state.root -and $state.projectName -eq 'Windows CI persistence check' -and $state.renderedProjectName -eq 'Windows CI persistence check') { break } } catch { } } while ([DateTime]::UtcNow -lt $restartDeadline)
     if (-not $state.bridge -or -not $state.root -or $state.projectName -ne 'Windows CI persistence check' -or $state.renderedProjectName -ne 'Windows CI persistence check') { throw 'Project did not survive actual packaged-app restart.' }
@@ -301,7 +316,7 @@ exit 0
     $childPath = Join-Path $work 'standard-user-check.ps1'
     Set-Content $childPath $child -Encoding UTF8
     Set-TestAccess $childPath $false $false
-    $process = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Credential $credential -LoadUserProfile -WorkingDirectory $work -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $childPath, '-Root', $work, '-ProfileRoot', $profileBuffer.ToString()) -PassThru
+    $process = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Credential $credential -LoadUserProfile -WorkingDirectory $work -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $childPath, '-Root', $work, '-ProfileRoot', $profileBuffer.ToString(), '-ExpectedHash', $expected, '-AppVersion', $ExpectedVersion) -PassThru
     $null = $process.Handle # Cache the native handle before secondary-logon child exit.
     if (-not $process.WaitForExit(360000)) {
         $null = & "$env:SystemRoot\System32\taskkill.exe" /PID $process.Id /T /F 2>&1
@@ -344,10 +359,18 @@ finally {
     $report.overall = 'BLOCKED_UNSIGNED_INSTALLER'
     $reportFile = Join-Path $work 'windows-security-report.json'
     $report | ConvertTo-Json -Depth 20 | Set-Content $reportFile -Encoding UTF8
-    $name = 'windows-functional-report-' + [DateTime]::UtcNow.ToString('yyyy-MM-dd') + '-run-' + $env:GITHUB_RUN_ID + '.json'
-    $url = 'https://uploads.github.com/repos/manbuusong-cpu/ai-maker-studio-installers/releases/455308270/assets?name=' + [uri]::EscapeDataString($name)
-    $asset = Invoke-RestMethod -Uri $url -Headers $headers -Method Post -InFile $reportFile -ContentType 'application/json'
-    Write-Output ('REPORT_ASSET_ID=' + $asset.id)
+    if ($ReportOutputPath) {
+        $output = [IO.Path]::GetFullPath($ReportOutputPath)
+        $tempRoot = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+        if (-not $output.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or -not $output.EndsWith('.json')) { throw 'Report output must remain in the owned CI temporary directory.' }
+        Copy-Item -LiteralPath $reportFile -Destination $output
+    }
+    if ($ReportReleaseId -gt 0) {
+        $name = 'windows-functional-report-' + [DateTime]::UtcNow.ToString('yyyy-MM-dd') + '-run-' + $env:GITHUB_RUN_ID + '.json'
+        $url = 'https://uploads.github.com/repos/manbuusong-cpu/ai-maker-studio-installers/releases/' + $ReportReleaseId + '/assets?name=' + [uri]::EscapeDataString($name)
+        $asset = Invoke-RestMethod -Uri $url -Headers $headers -Method Post -InFile $reportFile -ContentType 'application/json'
+        Write-Output ('REPORT_ASSET_ID=' + $asset.id)
+    }
     Write-Output ($report | ConvertTo-Json -Depth 20 -Compress)
     $apiToken = $null
 }
