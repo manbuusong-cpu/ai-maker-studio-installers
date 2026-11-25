@@ -278,6 +278,12 @@ try {
     do { Start-Sleep -Seconds 2; try { $state = EvaluatePage; if ($state.bridge -and $state.root -and $state.projectName -eq 'Windows CI persistence check' -and $state.renderedProjectName -eq 'Windows CI persistence check') { break } } catch { } } while ([DateTime]::UtcNow -lt $restartDeadline)
     if (-not $state.bridge -or -not $state.root -or $state.projectName -ne 'Windows CI persistence check' -or $state.renderedProjectName -ne 'Windows CI persistence check') { throw 'Project did not survive actual packaged-app restart.' }
     Check 'PROJECT_RESTART' 'PASS' 'Synthetic project restored from the actual app userData directory after EXE restart.'
+    Stage 'RUNNING_APP_UNINSTALL_GUARD'
+    $guardUninstaller = Join-Path $install 'Uninstall AI Maker Studio.exe'
+    $guardProbe = Start-NativeTestProcess $guardUninstaller '/currentuser /S' 'RUNNING_APP_UNINSTALL_GUARD'
+    if (-not $guardProbe.WaitForExit(30000)) { Stop-OwnedTestProcess $guardProbe; throw 'Running-app guard timed out.' }
+    $app.Refresh()
+    Check 'RUNNING_APP_UNINSTALL_GUARD' $(if ($guardProbe.ExitCode -eq 10 -and -not $app.HasExited -and (Test-Path $exe)) { 'PASS' } else { 'FAIL' }) @{ exitCode = $guardProbe.ExitCode; appStillRunning = -not $app.HasExited; executablePreserved = Test-Path $exe }
 } catch { $childFailed = $true; Check 'INSTALL_OR_STARTUP' 'FAIL' $_.Exception.Message }
 finally {
     Stage 'CLEANUP'
@@ -295,15 +301,19 @@ finally {
         try {
             $uninstaller = Join-Path $install 'Uninstall AI Maker Studio.exe'
             if (Test-Path $uninstaller) {
-                # Use the registered per-user command. In-place _?= execution
-                # makes this builder's running-app check see the uninstaller
-                # itself under INSTDIR; normal NSIS launch copies it to TEMP.
+                # Use the exact registered per-user command without an in-place
+                # override. The conservative guard excludes only this uninstaller.
                 $prefix = '"' + $uninstaller + '"'
                 $registration = @(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -in @('AI Maker Studio', ('AI Maker Studio ' + $AppVersion)) -and $_.DisplayVersion -eq $AppVersion -and $_.QuietUninstallString -and $_.QuietUninstallString.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
                 if ($registration.Count -ne 1) { throw 'Exact per-user uninstall registration not found.' }
                 $quietArguments = $registration[0].QuietUninstallString.Substring($prefix.Length).Trim()
                 if ($quietArguments -notmatch '^/currentuser\s+/S$') { throw 'Unexpected registered uninstall flags; no shell or elevated retry allowed.' }
                 Check 'REGISTERED_UNINSTALL_COMMAND' 'PASS' 'Exact registered executable and /currentuser /S arguments; no in-place override.'
+                $prefixPath = $install.TrimEnd('\') + '\'
+                $payloadProcesses = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefixPath, [StringComparison]::OrdinalIgnoreCase) -and -not $_.ExecutablePath.Equals($uninstaller, [StringComparison]::OrdinalIgnoreCase) })
+                Check 'APP_STOPPED_BEFORE_UNINSTALL' $(if ($payloadProcesses.Count -eq 0) { 'PASS' } else { 'FAIL' }) @{ matchingPayloadProcessCount = $payloadProcesses.Count }
+                if ($payloadProcesses.Count) { throw 'Actual payload process remains; uninstall must not proceed.' }
+
                 $remove = Start-NativeTestProcess $uninstaller $quietArguments 'UNINSTALLER'
                 if (-not $remove.WaitForExit(60000)) { Stop-OwnedTestProcess $remove; throw 'Uninstall timed out.' }
                 $removeDeadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -362,7 +372,7 @@ finally {
             Check 'DISPOSABLE_ACCOUNT_CLEANUP' 'PASS' 'Only the account created in this run was removed.'
         } catch { Check 'DISPOSABLE_ACCOUNT_CLEANUP' 'FAIL' $_.Exception.Message }
     }
-    $required = @('INSTALL_NONADMIN','PACKAGED_WINDOWS_IDENTITY','RENDERER_AND_IPC','NODE_ISOLATION','WINDOWS_WEBGL','OFFLINE_DEFAULT','AUTOSAVE_ROUNDTRIP','PROJECT_RESTART','UNINSTALL_NONADMIN','PROJECT_PRESERVED_AFTER_UNINSTALL')
+    $required = @('INSTALL_NONADMIN','PACKAGED_WINDOWS_IDENTITY','RENDERER_AND_IPC','NODE_ISOLATION','WINDOWS_WEBGL','OFFLINE_DEFAULT','AUTOSAVE_ROUNDTRIP','PROJECT_RESTART','RUNNING_APP_UNINSTALL_GUARD','UNINSTALL_NONADMIN','PROJECT_PRESERVED_AFTER_UNINSTALL')
     $missing = @($required | Where-Object { $id = $_; -not @($report.checks | Where-Object { $_.id -eq $id -and $_.status -eq 'PASS' }).Count })
     $report.functionalResult = if ($missing.Count -eq 0 -and $report.childExitCode -eq 0 -and -not $report.childTimedOut -and $report.standardUserProgress.phase -eq 'FINISHED') { 'PASS' } else { 'INCOMPLETE' }
     $report.unpassedFunctionalChecks = $missing
