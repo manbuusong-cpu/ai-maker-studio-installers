@@ -1,0 +1,51 @@
+name: Verify owner-only private installer downloads
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/verify-private-delivery.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download and independently hash all private draft assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node --input-type=module <<'NODE'
+          import {createHash} from 'node:crypto';
+          const api='https://api.github.com/repos/manbuusong-cpu/ai-maker-studio-installers';
+          const expected=[{"id":793127689,"name":"AI-Maker-Studio-Setup-0.3.1-dev.2-Windows-x64-UNSIGNED.exe","bytes":138888053,"sha256":"60b2ead9e64a76551c7ced12c498334a44049bece3d3eb50319d755711e8677a"},{"id":793128046,"name":"AI-Maker-Studio-Setup-0.3.1-dev.2-Windows-x64-UNSIGNED.exe.sha256","bytes":125,"sha256":"ef66f7b1bbc6b4bd9f6b46811f737057c5e5f4af6ea1c6bd61ffc5bdf3c0376e"},{"id":793128090,"name":"rebuild-evidence.json","bytes":2220,"sha256":"cb9f086b6fe2d8a369b4fa38b6ceec72d5bcab08874d270078920d35abc09ca1"},{"id":793128129,"name":"windows-functional-report.json","bytes":8875,"sha256":"05bb44a22c618d78ee9b85490365e1d50752805c50eb55cf89e5e2a2b0926e86"}];
+          if(process.env.GITHUB_REPOSITORY!=='manbuusong-cpu/ai-maker-studio-installers'||!process.env.GH_TOKEN)throw Error('Authorized repository required');
+          async function read(url,accept,limit,keep=false){
+           const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),60000);
+           try{
+            let r=await fetch(url,{headers:{Authorization:'Bearer '+process.env.GH_TOKEN,Accept:accept},redirect:'manual',signal:controller.signal});
+            if(r.status===302){const u=new URL(r.headers.get('location'));if(u.protocol!=='https:'||u.username||u.password||!u.hostname.endsWith('.githubusercontent.com'))throw Error('Redirect rejected');r=await fetch(u,{redirect:'error',signal:controller.signal});}
+            if(!r.ok||!r.body)throw Error('Download unavailable');
+            let bytes=0;const hash=createHash('sha256'),chunks=[];
+            for await(const chunk of r.body){bytes+=chunk.length;if(bytes>limit)throw Error('Size limit');hash.update(chunk);if(keep)chunks.push(chunk);}
+            return {bytes,sha256:hash.digest('hex'),text:keep?Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/,''):undefined};
+           }finally{clearTimeout(timer);}
+          }
+          async function release(){return JSON.parse((await read(api+'/releases/458644330','application/vnd.github+json',1048576,true)).text);}
+          function requireDraft(r){if(r.id!==458644330||r.tag_name!=='v0.3.1-dev.2'||r.draft!==true||r.prerelease!==true||r.assets.length!==expected.length)throw Error('Exact owner-only draft required');}
+          const before=await release();requireDraft(before);const downloads=[],bodies={};
+          for(const item of expected){
+           const asset=before.assets.find(a=>a.id===item.id&&a.name===item.name);
+           if(!asset||asset.size!==item.bytes||asset.digest!=='sha256:'+item.sha256)throw Error('Asset metadata mismatch');
+           const data=await read(api+'/releases/assets/'+item.id,'application/octet-stream',item.bytes,item.bytes<1048576);
+           if(data.bytes!==item.bytes||data.sha256!==item.sha256)throw Error('Independent download integrity mismatch');
+           downloads.push({id:item.id,name:item.name,bytes:data.bytes,sha256:data.sha256,status:'PASS'});if(data.text)bodies[item.name]=data.text;
+          }
+          const exe=expected[0],report=JSON.parse(bodies['windows-functional-report.json']),evidence=JSON.parse(bodies['rebuild-evidence.json']);
+          if(bodies[exe.name+'.sha256']!==exe.sha256+'  '+exe.name+'\n')throw Error('Checksum text mismatch');
+          if(report.functionalResult!=='PASS'||report.lifecycleResult!=='PASS'||report.childExitCode!==0||report.unpassedFunctionalChecks.length||report.artifact.sha256!==exe.sha256||report.artifact.bytes!==exe.bytes)throw Error('Windows report mismatch');
+          if(evidence.archiveFilesVerified!==3986||evidence.unpackedFilesPreserved!==8||evidence.changedArchiveFiles.length!==3||evidence.productionUpdates!=='DISABLED'||evidence.nativeUninstaller.method!=='NATIVE_WINDOWS_WRITEUNINSTALLER'||evidence.nativeUninstaller.sha256!==report.checks.find(c=>c.id==='NATIVE_UNINSTALLER_INSTALLED_INTEGRITY'&&c.status==='PASS')?.detail)throw Error('Rebuild evidence mismatch');
+          const after=await release();requireDraft(after);
+          console.log(JSON.stringify({deliveryVerification:{status:'PASS',releaseId:after.id,draft:true,htmlUrl:after.html_url,runId:process.env.GITHUB_RUN_ID,downloads,sourceUploaded:false}}));
+          console.log(JSON.stringify({rebuildEvidence:evidence}));
+          NODE
