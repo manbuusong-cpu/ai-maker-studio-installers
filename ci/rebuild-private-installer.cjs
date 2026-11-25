@@ -13,6 +13,7 @@ const ARTIFACT = `AI-Maker-Studio-Setup-${VERSION}-Windows-x64-UNSIGNED.exe`;
 const ORIGINAL = Object.freeze({ assetId: 782615221, bytes: 137767835, sha256: '4c93d4032860f6ee0b55a76715761c48605527e95b55ecd5730edd5fe8cf9fa6', asarSha256: 'ef37a88dce5beb45f57aea7ea1c35c76c361ee218efc096103f32dc1ab848c36' });
 const POLICY = 'apps/desktop/electron/updates/trust-policy.cjs';
 const POLICY_HASH = '57f3d8e9696eb7c2e5ea96f6385935477a3ee8673148b6779e8ec0266f6ced22';
+const NSIS_GUARD_SHA256 = '07b41815baef786b2486a06c18e71dd7b3cee0459443eeb6551a5099119abf79';
 const PATCHES = Object.freeze({
   'apps/desktop/electron/security/renderer-policy.cjs': ['46d1e131a713cd72837dab276ca8ffdc968c0a8796c8f33c185d1235c4ac1394', '1d90ea6a0163e87bfb473107e7c21f7e24585218f95505df65cfc1f3f7e80b29'],
   'package.json': ['b1791b16b1f68acd25cc35f90f9a6b8132afc9658afffb2a5ea3b47ccbec45c4', 'f74fcf2f499e7f367854a4898e382fca78c49e16f3991387b7d6dc6a98c0063f'],
@@ -287,9 +288,13 @@ async function buildPrivate(client, root) {
   assertCompanions(outerBefore, await treeHashes(payload));
   const metadata = JSON.parse(archiveLookup(asar, 'extractFile', archive, 'package.json'));
   await writeJSON(path.join(work, 'package.json'), metadata);
+  const guard = await fs.readFile(path.join(__dirname, 'nsis-app-running-guard.nsh'));
+  if (sha(guard) !== NSIS_GUARD_SHA256) fail('NSIS_APP_RUNNING_GUARD_HASH_MISMATCH');
+  const guardInclude = path.join(work, 'nsis-app-running-guard.nsh');
+  await fs.writeFile(guardInclude, guard, { flag: 'wx' });
   const config = { appId: 'lt.aimaker.studio', productName: 'AI Maker Studio', electronVersion: '45.4.1', asar: true, forceCodeSigning: false, compression: 'normal', directories: { output }, publish: null,
     win: { target: [{ target: 'nsis', arch: ['x64'] }], artifactName: ARTIFACT, requestedExecutionLevel: 'asInvoker', forceCodeSigning: false, signAndEditExecutable: false, signExecutable: false },
-    nsis: { oneClick: false, perMachine: false, selectPerMachineByDefault: false, allowElevation: false, packElevateHelper: false, allowToChangeInstallationDirectory: true, deleteAppDataOnUninstall: false, createDesktopShortcut: true, createStartMenuShortcut: true, runAfterFinish: false, warningsAsErrors: true },
+    nsis: { include: guardInclude, oneClick: false, perMachine: false, selectPerMachineByDefault: false, allowElevation: false, packElevateHelper: false, allowToChangeInstallationDirectory: true, deleteAppDataOnUninstall: false, createDesktopShortcut: true, createStartMenuShortcut: true, runAfterFinish: false, warningsAsErrors: true },
   };
   const { WineVmManager } = require('app-builder-lib/out/vm/WineVm'), { UninstallerReader } = require('app-builder-lib/out/targets/nsis/nsisUtil');
   const intermediate = path.join(output, ARTIFACT), originalExec = WineVmManager.prototype.exec;
@@ -308,7 +313,7 @@ async function buildPrivate(client, root) {
   const artifact = { path: intermediate, version: VERSION, bytes: (await fs.stat(intermediate)).size, sha256: await hashFile(intermediate) };
   if (artifact.bytes < 1024 * 1024 || artifact.sha256 === ORIGINAL.sha256) fail('NEW_INSTALLER_REQUIRED');
   const evidenceFile = path.join(work, 'rebuild-evidence.json');
-  await writeJSON(evidenceFile, { schemaVersion: 1, original: ORIGINAL, artifact: { version: VERSION, bytes: artifact.bytes, sha256: artifact.sha256 }, changedArchiveFiles: Object.keys(PATCHES).map(name => ({ name, beforeSha256: PATCHES[name][0], afterSha256: PATCHES[name][1] })), archiveFilesVerified: inventory.length, unpackedFilesPreserved: unpacked.length, unchangedCompanionsVerified: Object.keys(outerBefore).length - 2, productionUpdates: 'DISABLED', authenticode: 'UNSIGNED', hardening, publicSourceUploaded: false, limitations: ['Unsigned private development artifact; SmartScreen reputation and target user-PC acceptance are not validated by rebuilding.'] });
+  await writeJSON(evidenceFile, { schemaVersion: 1, original: ORIGINAL, artifact: { version: VERSION, bytes: artifact.bytes, sha256: artifact.sha256 }, changedArchiveFiles: Object.keys(PATCHES).map(name => ({ name, beforeSha256: PATCHES[name][0], afterSha256: PATCHES[name][1] })), nsisAppRunningGuardSha256: NSIS_GUARD_SHA256, archiveFilesVerified: inventory.length, unpackedFilesPreserved: unpacked.length, unchangedCompanionsVerified: Object.keys(outerBefore).length - 2, productionUpdates: 'DISABLED', authenticode: 'UNSIGNED', hardening, publicSourceUploaded: false, limitations: ['Unsigned private development artifact; SmartScreen reputation and target user-PC acceptance are not validated by rebuilding.'] });
   await fs.writeFile(intermediate + '.sha256', `${artifact.sha256}  ${ARTIFACT}\n`, { flag: 'wx' });
   const manifestFile = path.join(work, 'rebuild-manifest.json');
   await writeJSON(manifestFile, { schemaVersion: 1, workRoot: work, artifact, evidenceFile });
@@ -360,5 +365,5 @@ async function main() {
   }
   console.log(JSON.stringify(result));
 }
-module.exports = { ORIGINAL, PATCHES, POLICY_HASH, replaceOnce, patchArchivedFile, childEnvironment, requireEnvironment, assertInventory, assertCompanions, assertUnsignedPE, validateFunctionalReport, selectPayloadMember, failureDiagnostic, nativeArchivePath, archiveLookup };
+module.exports = { ORIGINAL, PATCHES, POLICY_HASH, NSIS_GUARD_SHA256, replaceOnce, patchArchivedFile, childEnvironment, requireEnvironment, assertInventory, assertCompanions, assertUnsignedPE, validateFunctionalReport, selectPayloadMember, failureDiagnostic, nativeArchivePath, archiveLookup };
 if (require.main === module) main().catch(error => { console.error(JSON.stringify({ error: 'PRIVATE_INSTALLER_OPERATION_FAILED', ...failureDiagnostic(error) })); process.exitCode = 1; });
