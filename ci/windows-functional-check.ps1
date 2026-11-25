@@ -299,7 +299,7 @@ finally {
                 # makes this builder's running-app check see the uninstaller
                 # itself under INSTDIR; normal NSIS launch copies it to TEMP.
                 $prefix = '"' + $uninstaller + '"'
-                $registration = @(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'AI Maker Studio' -and $_.DisplayVersion -eq $AppVersion -and $_.QuietUninstallString -and $_.QuietUninstallString.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
+                $registration = @(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -in @('AI Maker Studio', ('AI Maker Studio ' + $AppVersion)) -and $_.DisplayVersion -eq $AppVersion -and $_.QuietUninstallString -and $_.QuietUninstallString.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
                 if ($registration.Count -ne 1) { throw 'Exact per-user uninstall registration not found.' }
                 $quietArguments = $registration[0].QuietUninstallString.Substring($prefix.Length).Trim()
                 if ($quietArguments -notmatch '^/currentuser\s+/S$') { throw 'Unexpected registered uninstall flags; no shell or elevated retry allowed.' }
