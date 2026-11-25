@@ -4,7 +4,7 @@ on:
     branches: [main]
     paths: ['.github/workflows/verify-private-delivery.yml']
 permissions:
-  contents: read
+  contents: write
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -25,7 +25,7 @@ jobs:
            try{
             let r=await fetch(url,{headers:{Authorization:'Bearer '+process.env.GH_TOKEN,Accept:accept},redirect:'manual',signal:controller.signal});
             if(r.status===302){const u=new URL(r.headers.get('location'));if(u.protocol!=='https:'||u.username||u.password||!u.hostname.endsWith('.githubusercontent.com'))throw Error('Redirect rejected');r=await fetch(u,{redirect:'error',signal:controller.signal});}
-            if(!r.ok||!r.body)throw Error('Download unavailable');
+            if(!r.ok||!r.body)throw Error('Download unavailable HTTP '+r.status);
             let bytes=0;const hash=createHash('sha256'),chunks=[];
             for await(const chunk of r.body){bytes+=chunk.length;if(bytes>limit)throw Error('Size limit');hash.update(chunk);if(keep)chunks.push(chunk);}
             return {bytes,sha256:hash.digest('hex'),text:keep?Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/,''):undefined};
